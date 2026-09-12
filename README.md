@@ -47,6 +47,39 @@ contrail is shaped by what Plane actually permits, verified against its API:
 - Plane exposes work item comments through its API, but not page comments — so inbound
   discussion is captured from work items.
 
+## Live verification
+
+Every automated test runs without a network. One test does not:
+`tests/integration/plane-live.test.ts` publishes a real page to a real Plane workspace to
+settle what only a live instance can settle — above all, whether Plane's
+`<image-component src="...">` actually renders an uploaded asset referenced by its id. It is
+skipped automatically (`describe.skipIf`) unless all three environment variables below are
+set, so `npx vitest run` stays green with no Plane access at all.
+
+To run it:
+
+```bash
+PLANE_BASE_URL=https://plane.yourcompany.com \
+PLANE_WORKSPACE=your-workspace \
+PLANE_API_KEY=your-key \
+npx vitest run tests/integration/plane-live.test.ts
+```
+
+The test logs the created page's id and URL to the console **before** any assertion runs, so
+the page is still there to inspect even if an assertion fails (the page is archived in a
+`finally` block regardless of outcome).
+
+**The test passing is necessary but not sufficient.** Its assertions only prove the emitted
+markup — image component, body text, callout, table — survived Plane's HTML sanitizer intact.
+They cannot prove the diagram image actually resolves in a browser. After the test passes,
+open the logged page URL yourself and confirm the mermaid diagram renders as a picture rather
+than a broken image icon. If it is broken, `imageSrc()` in `src/emit/plane.ts` is the single
+place to change: try the asset's `asset_url` (from `createAssetUpload`) instead of the bare
+asset id.
+
+Record what you find in `docs/verification.md` — it is currently an unfilled template, since
+this has not yet been run against a real instance.
+
 ## Status
 
 Not yet implemented. The design is settled and reviewed; see the milestones in the design
