@@ -1,3 +1,5 @@
+import { parseAttrs } from './attrs.js'
+
 export interface ArtifactMeta {
   /** Path to a static image, relative to the document. */
   fallback: string
@@ -6,23 +8,6 @@ export interface ArtifactMeta {
 }
 
 export class ArtifactBlockError extends Error {}
-
-const ATTR = /(\w+)\s*=\s*("((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)')/g
-
-function unescape(value: string): string {
-  return value.replace(/\\(.)/g, '$1')
-}
-
-function parseAttrs(meta: string): Record<string, string> {
-  const out: Record<string, string> = {}
-  for (const match of meta.matchAll(ATTR)) {
-    const doubleQuoted = match[3]
-    const singleQuoted = match[4]
-    const raw = doubleQuoted ?? singleQuoted ?? ''
-    out[match[1]!] = unescape(raw)
-  }
-  return out
-}
 
 export function parseArtifactMeta(meta: string | null | undefined, where: string): ArtifactMeta {
   const attrs = parseAttrs(meta ?? '')

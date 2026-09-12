@@ -51,6 +51,15 @@ export function loadConfig(configPath: string): Config {
     }
   }
 
+  if (raw.archify !== undefined) {
+    if (typeof raw.archify !== 'object' || raw.archify === null) {
+      throw new ConfigError(`${configPath}: \`archify\` must be an object.`)
+    }
+    if (raw.archify.bin !== undefined && typeof raw.archify.bin !== 'string') {
+      throw new ConfigError(`${configPath}: \`archify.bin\` must be a string.`)
+    }
+  }
+
   return {
     root: dirname(configPath),
     plane: {
@@ -61,5 +70,6 @@ export function loadConfig(configPath: string): Config {
     repos,
     docs: raw.docs,
     site: raw.site,
+    archify: raw.archify,
   }
 }

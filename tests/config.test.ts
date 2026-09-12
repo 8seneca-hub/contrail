@@ -58,4 +58,48 @@ describe('loadConfig', () => {
     }))
     expect(() => loadConfig(join(root, 'contrail.config.json'))).toThrow(/repos\.billing.*must be a string/)
   })
+
+  it('accepts a config with no archify field', () => {
+    const root = workspace(VALID)
+    const cfg = loadConfig(join(root, 'contrail.config.json'))
+    expect(cfg.archify).toBeUndefined()
+  })
+
+  it('accepts an archify.bin absolute path', () => {
+    const root = workspace(JSON.stringify({
+      plane: { baseUrl: 'https://plane.example.com', workspace: 'acme' },
+      docs: ['./docs/**/*.md'],
+      archify: { bin: '/opt/archify/bin/archify.mjs' },
+    }))
+    const cfg = loadConfig(join(root, 'contrail.config.json'))
+    expect(cfg.archify).toEqual({ bin: '/opt/archify/bin/archify.mjs' })
+  })
+
+  it('accepts archify as an empty object (bin resolved from PATH)', () => {
+    const root = workspace(JSON.stringify({
+      plane: { baseUrl: 'https://plane.example.com', workspace: 'acme' },
+      docs: ['./docs/**/*.md'],
+      archify: {},
+    }))
+    const cfg = loadConfig(join(root, 'contrail.config.json'))
+    expect(cfg.archify).toEqual({})
+  })
+
+  it('rejects archify.bin that is not a string', () => {
+    const root = workspace(JSON.stringify({
+      plane: { baseUrl: 'https://plane.example.com', workspace: 'acme' },
+      docs: ['./docs/**/*.md'],
+      archify: { bin: 123 },
+    }))
+    expect(() => loadConfig(join(root, 'contrail.config.json'))).toThrow(/archify\.bin.*must be a string/)
+  })
+
+  it('rejects archify that is not an object', () => {
+    const root = workspace(JSON.stringify({
+      plane: { baseUrl: 'https://plane.example.com', workspace: 'acme' },
+      docs: ['./docs/**/*.md'],
+      archify: 'nope',
+    }))
+    expect(() => loadConfig(join(root, 'contrail.config.json'))).toThrow(/archify.*must be an object/)
+  })
 })

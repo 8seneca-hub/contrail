@@ -31,6 +31,8 @@ export interface Config {
   repos: Record<string, string>
   docs: string[]
   site?: { host: 'vercel' }
+  /** Archify CLI location. When `bin` is absent, `archify` is resolved from PATH. */
+  archify?: { bin?: string }
 }
 
 export interface RenderedDiagram {
