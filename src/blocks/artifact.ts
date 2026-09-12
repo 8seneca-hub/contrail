@@ -7,12 +7,19 @@ export interface ArtifactMeta {
 
 export class ArtifactBlockError extends Error {}
 
-const ATTR = /(\w+)\s*=\s*("([^"]*)"|'([^']*)')/g
+const ATTR = /(\w+)\s*=\s*("((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)')/g
+
+function unescape(value: string): string {
+  return value.replace(/\\(.)/g, '$1')
+}
 
 function parseAttrs(meta: string): Record<string, string> {
   const out: Record<string, string> = {}
   for (const match of meta.matchAll(ATTR)) {
-    out[match[1]!] = match[3] ?? match[4] ?? ''
+    const doubleQuoted = match[3]
+    const singleQuoted = match[4]
+    const raw = doubleQuoted ?? singleQuoted ?? ''
+    out[match[1]!] = unescape(raw)
   }
   return out
 }

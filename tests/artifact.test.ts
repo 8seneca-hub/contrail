@@ -28,7 +28,7 @@ describe('parseArtifactMeta', () => {
   // Additional edge case tests
   describe('edge cases', () => {
     it('rejects a block missing BOTH fallback and summary', () => {
-      const err = expect(() => parseArtifactMeta('{}', 'flow.md:5')).toThrow(ArtifactBlockError)
+      expect(() => parseArtifactMeta('{}', 'flow.md:5')).toThrow(ArtifactBlockError)
       // The first missing field should throw first
       try {
         parseArtifactMeta('{}', 'flow.md:5')
@@ -139,6 +139,49 @@ describe('parseArtifactMeta', () => {
 
     it('throws ArtifactBlockError, not a generic Error', () => {
       expect(() => parseArtifactMeta('{summary="S"}', 'flow.md:1')).toThrow(ArtifactBlockError)
+    })
+
+    describe('escape handling', () => {
+      it('unescapes escaped double quotes in double-quoted values', () => {
+        const meta = parseArtifactMeta(
+          '{fallback="a.png", summary="a \\"b\\" c"}',
+          'flow.md:1'
+        )
+        expect(meta.summary).toBe('a "b" c')
+      })
+
+      it('unescapes escaped single quotes in single-quoted values', () => {
+        const meta = parseArtifactMeta(
+          "{fallback='a.png', summary='a \\'b\\' c'}",
+          'flow.md:1'
+        )
+        expect(meta.summary).toBe("a 'b' c")
+      })
+
+      it('preserves literal backslashes that are not before a quote', () => {
+        const meta = parseArtifactMeta(
+          '{fallback="a.png", summary="path\\\\to\\\\file"}',
+          'flow.md:1'
+        )
+        // \\\ in JSON becomes \\ in the string, then the first \\ escapes to \, and the second \ is before \, so \\ → \
+        expect(meta.summary).toBe('path\\to\\file')
+      })
+
+      it('handles backslash-escaped quote at end of value', () => {
+        const meta = parseArtifactMeta(
+          '{fallback="a.png", summary="ends with \\""}',
+          'flow.md:1'
+        )
+        expect(meta.summary).toBe('ends with "')
+      })
+    })
+
+    it('last duplicate attribute wins', () => {
+      const meta = parseArtifactMeta(
+        '{fallback="first.png", fallback="second.png", summary="S"}',
+        'flow.md:1'
+      )
+      expect(meta.fallback).toBe('second.png')
     })
   })
 })
