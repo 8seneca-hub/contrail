@@ -167,32 +167,36 @@ graph TD; A-->B;
     ])
   })
 
-  it('assigns image/jpeg, image/svg+xml, and application/octet-stream by fallback extension', async () => {
+  it('assigns the correct content type for every CONTENT_TYPES entry, plus an unknown extension', async () => {
+    // Table-driven over the full mapping so a typo in any single entry (e.g.
+    // '.gif' mapped to the wrong mime type) is caught, not just the couple
+    // of extensions a hand-picked sample would happen to cover.
+    const cases: ReadonlyArray<readonly [ext: string, expected: string]> = [
+      ['.png', 'image/png'],
+      ['.jpg', 'image/jpeg'],
+      ['.jpeg', 'image/jpeg'],
+      ['.gif', 'image/gif'],
+      ['.webp', 'image/webp'],
+      ['.svg', 'image/svg+xml'],
+      ['.xyz', 'application/octet-stream'],
+    ]
+
     const root = mkdtempSync(join(tmpdir(), 'contrail-assets-types-'))
-    writeFileSync(join(root, 'flow.jpg'), 'jpg-bytes')
-    writeFileSync(join(root, 'flow.svg'), '<svg></svg>')
-    writeFileSync(join(root, 'flow.xyz'), 'mystery-bytes')
-    const body = `${FRONTMATTER}\`\`\`artifact {fallback="./flow.jpg", summary="jpg"}
+    for (const [ext] of cases) {
+      writeFileSync(join(root, `flow${ext}`), `bytes for ${ext}`)
+    }
+    const blocks = cases
+      .map(
+        ([ext], i) => `\`\`\`artifact {fallback="./flow${ext}", summary="case ${i}"}
 <div></div>
-\`\`\`
-
-\`\`\`artifact {fallback="./flow.svg", summary="svg"}
-<div></div>
-\`\`\`
-
-\`\`\`artifact {fallback="./flow.xyz", summary="unknown"}
-<div></div>
-\`\`\`
-`
-    const doc = writeDoc(root, body)
+\`\`\``,
+      )
+      .join('\n\n')
+    const doc = writeDoc(root, `${FRONTMATTER}${blocks}\n`)
     const mmdc = fakeMmdc()
     const assets = await collectAssets(doc, { cacheDir: join(root, '.cache'), mmdc })
 
-    expect(assets.map((a) => a.contentType)).toEqual([
-      'image/jpeg',
-      'image/svg+xml',
-      'application/octet-stream',
-    ])
+    expect(assets.map((a) => a.contentType)).toEqual(cases.map(([, expected]) => expected))
   })
 
   it('genuinely avoids invoking the renderer on a cache hit', async () => {
