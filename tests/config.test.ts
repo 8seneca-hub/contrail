@@ -41,4 +41,21 @@ describe('loadConfig', () => {
     const root = workspace(JSON.stringify({ plane: { baseUrl: 'https://x' }, docs: ['./d/*.md'] }))
     expect(() => loadConfig(join(root, 'contrail.config.json'))).toThrow(ConfigError)
   })
+
+  it('rejects docs entries that are not strings', () => {
+    const root = workspace(JSON.stringify({
+      plane: { baseUrl: 'https://plane.example.com', workspace: 'acme' },
+      docs: ['./docs/**/*.md', 123],
+    }))
+    expect(() => loadConfig(join(root, 'contrail.config.json'))).toThrow(/docs\[1\].*must be a non-empty string/)
+  })
+
+  it('rejects repos values that are not strings', () => {
+    const root = workspace(JSON.stringify({
+      plane: { baseUrl: 'https://plane.example.com', workspace: 'acme' },
+      repos: { a: './repo-a', billing: 5 },
+      docs: ['./docs/**/*.md'],
+    }))
+    expect(() => loadConfig(join(root, 'contrail.config.json'))).toThrow(/repos\.billing.*must be a string/)
+  })
 })

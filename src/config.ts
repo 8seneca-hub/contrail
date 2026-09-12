@@ -35,6 +35,22 @@ export function loadConfig(configPath: string): Config {
     throw new ConfigError(`${configPath}: \`docs\` must be a non-empty array of globs.`)
   }
 
+  // Validate docs entries are non-empty strings
+  for (let i = 0; i < raw.docs.length; i++) {
+    const doc = raw.docs[i]
+    if (typeof doc !== 'string' || doc.length === 0) {
+      throw new ConfigError(`${configPath}: \`docs[${i}]\` must be a non-empty string.`)
+    }
+  }
+
+  // Validate repos values are strings
+  const repos = raw.repos ?? {}
+  for (const [key, value] of Object.entries(repos)) {
+    if (typeof value !== 'string') {
+      throw new ConfigError(`${configPath}: \`repos.${key}\` must be a string.`)
+    }
+  }
+
   return {
     root: dirname(configPath),
     plane: {
@@ -42,7 +58,7 @@ export function loadConfig(configPath: string): Config {
       workspace: raw.plane.workspace,
       collection: raw.plane.collection,
     },
-    repos: raw.repos ?? {},
+    repos,
     docs: raw.docs,
     site: raw.site,
   }
