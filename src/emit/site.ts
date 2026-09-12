@@ -5,14 +5,14 @@ import rehypeStringify from 'rehype-stringify'
 import remarkRehype from 'remark-rehype'
 import { unified } from 'unified'
 import { visit } from 'unist-util-visit'
-import type { Blockquote, Code, Parent, Root, RootContent } from 'mdast'
+import type { Blockquote, Code, Link, Parent, Root, RootContent, Text } from 'mdast'
 import { assetIdForDiagram, assetIdForFile, collectAssets, collectDiagrams } from '../assets.js'
 import { matchAlert, stripAlertMarker, type AlertKind } from '../blocks/alert.js'
 import { parseArchifyMeta } from '../blocks/archify.js'
 import { parseArtifactMeta } from '../blocks/artifact.js'
 import type { ArchifyOptions } from '../render/archify.js'
 import type { Mmdc } from '../render/mermaid.js'
-import type { Doc } from '../types.js'
+import type { Audience, Doc } from '../types.js'
 
 const SITE_CSS_PATH = fileURLToPath(new URL('../../templates/site.css', import.meta.url))
 
@@ -21,6 +21,25 @@ export interface SiteEmitContext {
   diagramPaths: Record<string, string>
   /** `AssetPlan.id` -> path relative to the site root, e.g. "assets/<hash>.png". */
   assetPaths: Record<string, string>
+  /**
+   * Every known document's absolute path -> whether it is being emitted in
+   * this build. Drives link defanging: a link into a document this build
+   * will NOT emit must never reach the page as a working — or even
+   * readable — href, because the href itself (e.g. `03-management/budget.md`)
+   * would still name a document the reader was never meant to know exists.
+   * A path absent from this map is not a document contrail knows about
+   * (an external URL, an asset, ...) and is left untouched.
+   */
+  docVisibility: Map<string, boolean>
+  /** Every link rewritten to plain text because its target is not visible in this build. */
+  defangedLinks: DefangedLink[]
+}
+
+export interface DefangedLink {
+  /** The document the link was found in. */
+  doc: string
+  /** The original (never-emitted) href. */
+  url: string
 }
 
 export interface SiteResult {
@@ -29,6 +48,8 @@ export interface SiteResult {
   pages: string[]
   /** Number of distinct diagram artifacts copied into the output. */
   diagrams: number
+  /** Links rewritten to plain text because their target was excluded from this build. */
+  defangedLinks: DefangedLink[]
 }
 
 export function escapeHtml(value: string): string {
@@ -114,6 +135,52 @@ function transformCodeBlocks(doc: Doc, tree: Root, ctx: SiteEmitContext): Replac
   return replacements
 }
 
+/** Concatenated text content of a link's children — its visible label, never its href. */
+function linkText(node: Link): string {
+  let text = ''
+  visit(node, 'text', (t: Text) => {
+    text += t.value
+  })
+  return text
+}
+
+/**
+ * Resolves a link's `url` to the absolute path it would point at on disk, or
+ * `undefined` when it plainly isn't a local document reference (an external
+ * URL, a mailto:, an in-page anchor). Fragments and query strings are
+ * stripped before resolving, so `budget.md#totals` still resolves to
+ * `budget.md`.
+ */
+function resolveLinkTarget(doc: Doc, url: string): string | undefined {
+  if (!url || url.startsWith('#') || /^[a-z][a-z0-9+.-]*:/i.test(url)) return undefined
+  const withoutFragment = url.split('#')[0]!.split('?')[0]!
+  if (!withoutFragment) return undefined
+  return resolve(dirname(doc.absPath), withoutFragment)
+}
+
+/**
+ * A client-visible page must never carry a working — or readable — link to
+ * a document this build excludes. `ctx.docVisibility` covers every document
+ * contrail knows about (not just the ones being emitted), so a link into an
+ * excluded one is recognized even though that document's own page was never
+ * written. The link is replaced by its own plain text: no href survives,
+ * because the href alone (e.g. `03-management/budget.md`) is enough to leak
+ * that the document exists.
+ */
+function transformLinks(doc: Doc, tree: Root, ctx: SiteEmitContext): void {
+  visit(tree, 'link', (node: Link, index: number | undefined, parent: Parent | undefined) => {
+    if (parent === undefined || index === undefined) return
+    const target = resolveLinkTarget(doc, node.url)
+    if (target === undefined) return
+    const visible = ctx.docVisibility.get(target)
+    if (visible === undefined || visible) return // not a document contrail tracks, or it is visible: leave it
+
+    ctx.defangedLinks.push({ doc: doc.key, url: node.url })
+    const text: Text = { type: 'text', value: linkText(node) }
+    parent.children.splice(index, 1, text)
+  })
+}
+
 const ALERT_CLASS: Record<AlertKind, string> = {
   NOTE: 'note',
   TIP: 'tip',
@@ -174,6 +241,7 @@ ${body}
 
 export function emitSite(doc: Doc, ctx: SiteEmitContext): string {
   const tree = structuredClone(doc.tree) as Root
+  transformLinks(doc, tree, ctx)
   const replacements = transformCodeBlocks(doc, tree, ctx)
   replacements.push(...transformAlerts(tree))
 
@@ -220,14 +288,29 @@ ${rows}
   return pageShell('Documentation', body)
 }
 
+/** Every document contrail knows about that would be published for the given audience filter.
+ * `undefined` (no `--audience` flag) publishes everything — the audience gate is strictly opt-in. */
+export function docsForAudience(docs: Doc[], audience: Audience | undefined): Doc[] {
+  if (audience === undefined) return docs
+  return docs.filter((doc) => doc.frontmatter.audience === audience)
+}
+
 export async function buildSite(args: {
+  /** Every document contrail knows about — not just the ones being emitted.
+   * The full set is required even for a filtered build, so link defanging
+   * can recognize a link into a document this build excludes. */
   docs: Doc[]
   outDir: string
   cacheDir: string
   mmdc?: Mmdc
   archify?: ArchifyOptions
+  /** `'client'` emits only `audience: client` documents. Omitted, the default publishes everything. */
+  audience?: Audience
 }): Promise<SiteResult> {
-  const { docs, outDir, cacheDir, mmdc, archify } = args
+  const { docs, outDir, cacheDir, mmdc, archify, audience } = args
+  const emitted = docsForAudience(docs, audience)
+  const emittedKeys = new Set(emitted.map((doc) => doc.key))
+  const docVisibility = new Map(docs.map((doc) => [resolve(doc.absPath), emittedKeys.has(doc.key)]))
 
   mkdirSync(outDir, { recursive: true })
   mkdirSync(join(outDir, 'diagrams'), { recursive: true })
@@ -238,7 +321,10 @@ export async function buildSite(args: {
   const assetPaths: Record<string, string> = {}
   let diagramCount = 0
 
-  for (const doc of docs) {
+  // Diagrams and assets are collected only from documents actually being
+  // emitted — an internal document's diagram must not become an unlinked
+  // public file in a client build any more than the document's own page may.
+  for (const doc of emitted) {
     for (const plan of await collectDiagrams(doc, { cacheDir, archify })) {
       if (!(plan.irPath in diagramPaths)) {
         const rel = `diagrams/${plan.hash}.html`
@@ -258,14 +344,15 @@ export async function buildSite(args: {
     }
   }
 
-  const ctx: SiteEmitContext = { diagramPaths, assetPaths }
+  const defangedLinks: DefangedLink[] = []
+  const ctx: SiteEmitContext = { diagramPaths, assetPaths, docVisibility, defangedLinks }
   const pages: string[] = []
-  for (const doc of docs) {
+  for (const doc of emitted) {
     writeFileSync(join(outDir, pageFileFor(doc.key)), emitSite(doc, ctx))
     pages.push(doc.key)
   }
 
-  writeFileSync(join(outDir, 'index.html'), emitIndex(docs))
+  writeFileSync(join(outDir, 'index.html'), emitIndex(emitted))
 
-  return { outDir, pages, diagrams: diagramCount }
+  return { outDir, pages, diagrams: diagramCount, defangedLinks }
 }

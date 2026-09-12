@@ -48,6 +48,13 @@ export interface Doc {
   tree: Root
   /** Markdown body with the frontmatter removed. */
   body: string
+  /**
+   * Whether `audience` was written explicitly in this document's
+   * frontmatter, as opposed to defaulted to `'internal'` by `parseDoc`.
+   * Drives `unclassified-money-doc`: a money document silently relying on
+   * the safe default must be loud, not quiet.
+   */
+  audienceExplicit: boolean
 }
 
 export interface Config {

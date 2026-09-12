@@ -33,6 +33,7 @@ export function parseDoc(absPath: string, root: string): Doc {
   if (fm.audience !== undefined && !AUDIENCES.includes(fm.audience)) {
     throw new DocError(`${key}: frontmatter \`audience\` must be one of ${AUDIENCES.join(', ')}.`)
   }
+  const audienceExplicit = fm.audience !== undefined
   // SAFETY: a document nobody classified must never be publishable to a
   // client. Absent `audience` defaults to the safe value, not a guess.
   fm.audience = fm.audience ?? 'internal'
@@ -46,5 +47,5 @@ export function parseDoc(absPath: string, root: string): Doc {
   }
 
   const tree = unified().use(remarkParse).use(remarkGfm).parse(content)
-  return { absPath, key, frontmatter: fm as Frontmatter, tree, body: content }
+  return { absPath, key, frontmatter: fm as Frontmatter, tree, body: content, audienceExplicit }
 }

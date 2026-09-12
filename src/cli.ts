@@ -4,14 +4,14 @@ import { parseArgs } from 'node:util'
 import { globSync } from 'tinyglobby'
 import { checkDocs, checkExitCode, writeLlmsTxt } from './check.js'
 import { findConfigPath, loadConfig } from './config.js'
-import { buildSite } from './emit/site.js'
+import { buildSite, docsForAudience } from './emit/site.js'
 import { loadLock, saveLock } from './lock.js'
 import { parseDoc } from './parse.js'
 import { PlaneClient } from './plane/client.js'
 import { publishDocs, type PublishOptions, type PublishResult } from './plane/publish.js'
 import type { PlaneApi } from './plane/client.js'
 import { CONFIG_TEMPLATE, runInitTemplate, scaffoldDoc, type ScaffoldResult } from './scaffold.js'
-import type { Config, Doc, Lock } from './types.js'
+import type { Audience, Config, Doc, Lock } from './types.js'
 
 export function runInit(cwd: string): string {
   const path = join(cwd, 'contrail.config.ts')
@@ -113,6 +113,28 @@ export function siteOutDirFor(config: Config, out: string | undefined): string {
   return resolve(config.root, out ?? 'site')
 }
 
+/**
+ * The only valid `--audience` values: `'client'`, or omitted (which means
+ * "everything"). Anything else — including `'internal'`, which sounds
+ * plausible but is not a build mode — is a usage error, not a silent
+ * fall-through to "publish everything".
+ */
+export function parseAudienceFlag(value: string | undefined): Audience | undefined {
+  if (value === undefined) return undefined
+  if (value === 'client') return 'client'
+  throw new Error(`Unknown --audience '${value}'. Only 'client' is supported (omit the flag for all documents).`)
+}
+
+/** The message printed when a client build has nothing to publish — an empty output directory must
+ * never look like an accident or a silent success; it must say plainly why it is empty. */
+export function emptyClientSiteMessage(): string {
+  return (
+    'contrail site --audience client: 0 documents are marked `audience: client` — the output is an ' +
+    'empty site. This is not an error: it means nothing in this project has been classified for the ' +
+    'client yet.'
+  )
+}
+
 /** One line per finding: severity, rule id, location, then the actionable message. */
 export function formatFinding(f: { doc: string; line?: number; rule: string; message: string; severity: string }): string {
   const where = f.line ? `${f.doc}:${f.line}` : f.doc
@@ -136,6 +158,7 @@ export async function main(argv: string[]): Promise<number> {
       force: { type: 'boolean', default: false },
       only: { type: 'string' },
       out: { type: 'string' },
+      audience: { type: 'string' },
       strict: { type: 'boolean', default: false },
       index: { type: 'boolean', default: false },
       template: { type: 'string' },
@@ -151,7 +174,8 @@ export async function main(argv: string[]): Promise<number> {
     console.log(
       'contrail init [--template agency-project] | build | status | ' +
         'publish [--dry-run] [--force] [--only <substring>] | ' +
-        'site [--out <dir>] | check [--strict] [--index] | scaffold <docKind> <path>',
+        'site [--out <dir>] [--audience client] | check [--strict] [--index] [--audience client] | ' +
+        'scaffold <docKind> <path>',
     )
     return 0
   }
@@ -190,6 +214,14 @@ export async function main(argv: string[]): Promise<number> {
     }
   }
 
+  let audience: Audience | undefined
+  try {
+    audience = parseAudienceFlag(values.audience)
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error))
+    return 2
+  }
+
   const config = loadConfig(findConfigPath(process.cwd()))
   const allDocs = findDocs(config).map((path) => parseDoc(path, config.root))
   const { docs, knownKeys } = publishArgsFor(allDocs, values.only)
@@ -205,8 +237,17 @@ export async function main(argv: string[]): Promise<number> {
       outDir: siteOutDirFor(config, values.out),
       cacheDir: join(config.root, '.contrail', 'cache'),
       archify: config.archify,
+      audience,
     })
     console.log(`Wrote ${result.pages.length} page(s) and ${result.diagrams} diagram(s) to ${result.outDir}`)
+    if (audience === 'client' && result.pages.length === 0) {
+      console.log(emptyClientSiteMessage())
+    }
+    for (const link of result.defangedLinks) {
+      console.log(
+        `DEFANGED  ${link.doc} linked to an excluded document (${link.url}) — rewritten as plain text.`,
+      )
+    }
     return 0
   }
 
@@ -215,7 +256,7 @@ export async function main(argv: string[]): Promise<number> {
     for (const finding of findings) console.log(formatFinding(finding))
 
     if (values.index) {
-      const path = writeLlmsTxt(config, allDocs)
+      const path = writeLlmsTxt(config, docsForAudience(allDocs, audience))
       console.log(`Wrote ${path}`)
     }
 

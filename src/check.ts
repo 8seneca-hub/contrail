@@ -18,6 +18,31 @@ const EXPLANATION_HEADING = /why|background|rationale|design note/i
 const RELATIVE_TIME = /\brecently\b|\bcurrently\b|\bthe current version\b|\bas of now\b/i
 const DANGLING_REFERENCE = /\bas (?:mentioned|described|shown) above\b|\bsee below\b/i
 
+/**
+ * A "money path": the conventional home of budget/estimate documents, or a
+ * path segment named for one. Matched independently of `docKind` because a
+ * document can sit under a money path without ever having been classified
+ * at all — that is exactly the silent case `unclassified-money-doc` exists
+ * to catch.
+ */
+const MONEY_PATH_PATTERNS = [/03-management\/budget(?:\/|\.|$)/, /(?:^|\/)estimate(?:\/|\.|$)/i]
+
+function isMoneyPath(key: string): boolean {
+  return MONEY_PATH_PATTERNS.some((re) => re.test(key))
+}
+
+/**
+ * Whether a document is money-sensitive: its `docKind` is `budget` or
+ * `estimate`, or it lives under a money path. Either is sufficient — a
+ * budget file misfiled outside `03-management/budget` is still a budget
+ * file, and a file sitting in a money path with no `docKind` set yet is
+ * still worth protecting.
+ */
+function isMoneyDoc(doc: Doc): boolean {
+  const kind = doc.frontmatter.docKind
+  return kind === 'budget' || kind === 'estimate' || isMoneyPath(doc.key)
+}
+
 function isDiagramCode(node: RootContent): boolean {
   return node.type === 'code' && (node.lang === 'archify' || node.lang === 'mermaid')
 }
@@ -244,6 +269,50 @@ function checkProseHygiene(doc: Doc, findings: Finding[]): void {
   })
 }
 
+/**
+ * The audience boundary, part one: a money document explicitly opted into
+ * `audience: client` would be published straight to the client. This is an
+ * error, not a warning — a lint tool that only nags about a leaked margin
+ * is not doing its job.
+ */
+function checkInternalDocExposed(doc: Doc, findings: Finding[]): void {
+  if (!isMoneyDoc(doc)) return
+  if (doc.frontmatter.audience !== 'client') return
+
+  findings.push({
+    doc: doc.key,
+    rule: 'internal-doc-exposed',
+    severity: 'error',
+    message:
+      'This document is money-sensitive ' +
+      `(docKind '${doc.frontmatter.docKind ?? 'n/a'}', path '${doc.key}') but is marked ` +
+      '`audience: client` — a client build would publish it. Remove `audience: client` or move it out ' +
+      'of a money path.',
+  })
+}
+
+/**
+ * The audience boundary, part two: the `internal` default already protects
+ * an unclassified money document from ever reaching a client build. The
+ * point of this rule is that the silence itself is a problem — nobody
+ * should be able to point at a budget file and honestly say "I never
+ * thought about who could see this."
+ */
+function checkUnclassifiedMoneyDoc(doc: Doc, findings: Finding[]): void {
+  if (!isMoneyDoc(doc)) return
+  if (doc.audienceExplicit) return
+
+  findings.push({
+    doc: doc.key,
+    rule: 'unclassified-money-doc',
+    severity: 'error',
+    message:
+      'This document is money-sensitive but has no explicit `audience` in its frontmatter. The default ' +
+      'keeps it internal, but silence on a money document must be loud — add `audience: internal` ' +
+      'explicitly (or `audience: client` if that is truly intended).',
+  })
+}
+
 export function checkDocs(docs: Doc[], _opts: { strict?: boolean } = {}): Finding[] {
   const findings: Finding[] = []
 
@@ -256,6 +325,8 @@ export function checkDocs(docs: Doc[], _opts: { strict?: boolean } = {}): Findin
     checkStaleDoc(doc, findings)
     checkMixedMode(doc, findings)
     checkProseHygiene(doc, findings)
+    checkInternalDocExposed(doc, findings)
+    checkUnclassifiedMoneyDoc(doc, findings)
   }
 
   return findings
