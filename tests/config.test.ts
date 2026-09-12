@@ -1,0 +1,44 @@
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { describe, expect, it } from 'vitest'
+import { ConfigError, findConfigPath, loadConfig } from '../src/config.js'
+
+function workspace(config: string): string {
+  const root = mkdtempSync(join(tmpdir(), 'contrail-'))
+  writeFileSync(join(root, 'contrail.config.json'), config)
+  mkdirSync(join(root, 'repo-a', 'docs'), { recursive: true })
+  return root
+}
+
+const VALID = JSON.stringify({
+  plane: { baseUrl: 'https://plane.example.com', workspace: 'acme' },
+  repos: { a: './repo-a' },
+  docs: ['./docs/**/*.md'],
+})
+
+describe('findConfigPath', () => {
+  it('finds the config by walking up from a nested directory', () => {
+    const root = workspace(VALID)
+    expect(findConfigPath(join(root, 'repo-a', 'docs'))).toBe(join(root, 'contrail.config.json'))
+  })
+
+  it('throws a message naming the directory when no config exists', () => {
+    const empty = mkdtempSync(join(tmpdir(), 'contrail-empty-'))
+    expect(() => findConfigPath(empty)).toThrow(/No contrail\.config/)
+  })
+})
+
+describe('loadConfig', () => {
+  it('returns the config with root set to the config directory', () => {
+    const root = workspace(VALID)
+    const cfg = loadConfig(join(root, 'contrail.config.json'))
+    expect(cfg.root).toBe(root)
+    expect(cfg.plane.workspace).toBe('acme')
+  })
+
+  it('rejects a config missing plane.workspace', () => {
+    const root = workspace(JSON.stringify({ plane: { baseUrl: 'https://x' }, docs: ['./d/*.md'] }))
+    expect(() => loadConfig(join(root, 'contrail.config.json'))).toThrow(ConfigError)
+  })
+})
