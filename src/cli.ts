@@ -11,6 +11,8 @@ import { PlaneClient } from './plane/client.js'
 import { publishDocs, type PublishOptions, type PublishResult } from './plane/publish.js'
 import type { PlaneApi } from './plane/client.js'
 import { CONFIG_TEMPLATE, runInitTemplate, scaffoldDoc, type ScaffoldResult } from './scaffold.js'
+import { credentialsPathFor, createGoogleSheetsClient } from './sheets/client.js'
+import { pullSheets, pushSheets, type PullResult, type PushResult } from './sheets/sync.js'
 import type { Audience, Config, Doc, Lock } from './types.js'
 
 export function runInit(cwd: string): string {
@@ -62,6 +64,28 @@ export function blockedMessageFor(key: string): string[] {
   return [
     `BLOCKED  ${key} was edited in Plane since the last publish; nothing was written.`,
     '         Re-publish with --force only if that edit can be discarded.',
+  ]
+}
+
+/** Resolves a `contrail sheet <action> <doc>` positional to the parsed `Doc` it names, matching by
+ * absolute path exactly like every other command matches documents it already parsed. */
+export function resolveDocArg(allDocs: Doc[], docArg: string): Doc | undefined {
+  const target = resolve(process.cwd(), docArg)
+  return allDocs.find((doc) => doc.absPath === target)
+}
+
+/** A `pull` that fell back to a cached snapshot: names the range and says why, so it is never
+ * mistaken for a normal refresh. */
+export function sheetStaleMessageFor(key: string): string {
+  return `STALE      ${key} (live read failed; kept the cached snapshot)`
+}
+
+/** The sheet write guard's refusal, named and with the same `--force` escape hatch as
+ * `blockedMessageFor` — a spreadsheet range is somebody's working document too. */
+export function sheetBlockedMessageFor(key: string): string[] {
+  return [
+    `BLOCKED  ${key} was edited in the Sheet since the last pull; nothing was written.`,
+    '         Re-push with --force only if that edit can be discarded.',
   ]
 }
 
@@ -175,7 +199,7 @@ export async function main(argv: string[]): Promise<number> {
       'contrail init [--template agency-project] | build | status | ' +
         'publish [--dry-run] [--force] [--only <substring>] | ' +
         'site [--out <dir>] [--audience client] | check [--strict] [--index] [--audience client] | ' +
-        'scaffold <docKind> <path>',
+        'scaffold <docKind> <path> | sheet pull <doc> | sheet push <doc> [--force]',
     )
     return 0
   }
@@ -309,6 +333,39 @@ export async function main(argv: string[]): Promise<number> {
       for (const line of blockedMessageFor(key)) console.error(line)
     }
     return exitCodeFor(result)
+  }
+
+  if (command === 'sheet') {
+    const [, action, docArg] = positionals
+    if (action !== 'pull' && action !== 'push') {
+      console.error('Usage: contrail sheet pull <doc> | contrail sheet push <doc> [--force]')
+      return 2
+    }
+    if (!docArg) {
+      console.error('Usage: contrail sheet pull <doc> | contrail sheet push <doc> [--force]')
+      return 2
+    }
+    const doc = resolveDocArg(allDocs, docArg)
+    if (!doc) {
+      console.error(`No document found for ${docArg}`)
+      return 2
+    }
+
+    const client = await createGoogleSheetsClient(credentialsPathFor(config))
+
+    if (action === 'pull') {
+      const result: PullResult = await pullSheets(doc, client)
+      for (const key of result.refreshed) console.log(`REFRESHED  ${key}`)
+      for (const key of result.stale) console.log(sheetStaleMessageFor(key))
+      return 0
+    }
+
+    const result: PushResult = await pushSheets(doc, client, { force: values.force })
+    for (const key of result.pushed) console.log(`PUSHED   ${key}`)
+    for (const key of result.blocked) {
+      for (const line of sheetBlockedMessageFor(key)) console.error(line)
+    }
+    return result.blocked.length > 0 ? 1 : 0
   }
 
   console.error(`Unknown command: ${command}`)

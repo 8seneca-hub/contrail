@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import {
   archivedMessageFor,
@@ -10,7 +10,10 @@ import {
   main,
   publishArgsFor,
   publishAndSave,
+  resolveDocArg,
   runInit,
+  sheetBlockedMessageFor,
+  sheetStaleMessageFor,
   siteOutDirFor,
 } from '../src/cli.js'
 import { loadConfig } from '../src/config.js'
@@ -153,6 +156,62 @@ describe('blockedMessageFor', () => {
     const lines = blockedMessageFor('docs/settlement.md')
     expect(lines.some((line) => line.includes('docs/settlement.md'))).toBe(true)
     expect(lines.some((line) => /force/i.test(line) && /discard/i.test(line))).toBe(true)
+  })
+})
+
+describe('sheetStaleMessageFor', () => {
+  it('names the range and says why numbers might be old', () => {
+    const line = sheetStaleMessageFor('sheet-1::Estimate!A1:B2')
+    expect(line).toContain('sheet-1::Estimate!A1:B2')
+    expect(line).toMatch(/STALE/)
+    expect(line).toMatch(/cached/i)
+  })
+})
+
+describe('sheetBlockedMessageFor', () => {
+  it('names the range and warns that --force discards the edit', () => {
+    const lines = sheetBlockedMessageFor('sheet-1::Estimate!A1:B2')
+    expect(lines.some((line) => line.includes('sheet-1::Estimate!A1:B2'))).toBe(true)
+    expect(lines.some((line) => /force/i.test(line) && /discard/i.test(line))).toBe(true)
+  })
+})
+
+describe('resolveDocArg', () => {
+  it('finds a document by its absolute path, and returns undefined for no match', () => {
+    const root = mkdtempSync(join(tmpdir(), 'contrail-resolve-'))
+    mkdirSync(join(root, 'docs'), { recursive: true })
+    writeFileSync(
+      join(root, 'docs', 'estimate.md'),
+      '---\ntitle: T\nsummary: S\nstatus: current\n---\nBody.\n',
+    )
+    const doc = parseDoc(join(root, 'docs', 'estimate.md'), root)
+
+    // Absolute paths bypass any cwd-vs-realpath symlink mismatch (macOS resolves `/var` to
+    // `/private/var` in `process.cwd()`), so this exercises `resolveDocArg`'s own match logic
+    // directly rather than that platform quirk.
+    expect(resolveDocArg([doc], doc.absPath)).toBe(doc)
+    expect(resolveDocArg([doc], join(root, 'docs', 'nonexistent.md'))).toBeUndefined()
+  })
+
+  it('resolves a relative path against the current working directory', () => {
+    const root = mkdtempSync(join(tmpdir(), 'contrail-resolve-'))
+    mkdirSync(join(root, 'docs'), { recursive: true })
+    writeFileSync(
+      join(root, 'docs', 'estimate.md'),
+      '---\ntitle: T\nsummary: S\nstatus: current\n---\nBody.\n',
+    )
+    // Parsed the same way `main()` does: relative to `process.cwd()` after chdir, so `doc.absPath`
+    // and `resolveDocArg`'s own `resolve(process.cwd(), docArg)` agree on the same (possibly
+    // symlink-resolved) root.
+    const cwd = process.cwd()
+    process.chdir(root)
+    try {
+      const doc = parseDoc(resolve(process.cwd(), 'docs/estimate.md'), process.cwd())
+      expect(resolveDocArg([doc], 'docs/estimate.md')).toBe(doc)
+      expect(resolveDocArg([doc], 'docs/nonexistent.md')).toBeUndefined()
+    } finally {
+      process.chdir(cwd)
+    }
   })
 })
 
@@ -447,5 +506,95 @@ describe('check command (via main)', () => {
     const llmsTxt = readFileSync(join(root, 'docs', 'llms.txt'), 'utf8')
     expect(llmsTxt).toContain('## Reference')
     expect(llmsTxt).toContain('[A]')
+  })
+})
+
+describe('sheet command (via main)', () => {
+  function setupWorkspace() {
+    const root = mkdtempSync(join(tmpdir(), 'contrail-sheet-cli-'))
+    mkdirSync(join(root, 'docs'), { recursive: true })
+    writeFileSync(
+      join(root, 'contrail.config.ts'),
+      "export default { plane: { baseUrl: 'https://plane.test', workspace: 'acme' }, repos: {}, " +
+        "docs: ['./docs/**/*.md'] }\n",
+    )
+    writeFileSync(
+      join(root, 'docs', 'estimate.md'),
+      '---\ntitle: Estimate\nsummary: S\nstatus: current\n---\n\n' +
+        '```sheet {id=sheet-1, range="A1:B2", summary="Effort estimate."}\n```\n',
+    )
+    return root
+  }
+
+  it('prints usage and exits 2 with no action', async () => {
+    const root = setupWorkspace()
+    const cwd = process.cwd()
+    process.chdir(root)
+    try {
+      expect(await main(['sheet'])).toBe(2)
+    } finally {
+      process.chdir(cwd)
+    }
+  })
+
+  it('prints usage and exits 2 for an unknown action', async () => {
+    const root = setupWorkspace()
+    const cwd = process.cwd()
+    process.chdir(root)
+    try {
+      expect(await main(['sheet', 'bogus', 'docs/estimate.md'])).toBe(2)
+    } finally {
+      process.chdir(cwd)
+    }
+  })
+
+  it('prints usage and exits 2 when the doc argument is missing', async () => {
+    const root = setupWorkspace()
+    const cwd = process.cwd()
+    process.chdir(root)
+    try {
+      expect(await main(['sheet', 'pull'])).toBe(2)
+    } finally {
+      process.chdir(cwd)
+    }
+  })
+
+  it('exits 2 naming the argument when no document matches it', async () => {
+    const root = setupWorkspace()
+    const logs: string[] = []
+    const spy = vi.spyOn(console, 'error').mockImplementation((msg: string) => logs.push(msg))
+    const cwd = process.cwd()
+    process.chdir(root)
+    try {
+      expect(await main(['sheet', 'pull', 'docs/nonexistent.md'])).toBe(2)
+    } finally {
+      process.chdir(cwd)
+      spy.mockRestore()
+    }
+    expect(logs.join('\n')).toContain('docs/nonexistent.md')
+  })
+
+  it('rejects with an actionable, credential-naming error before ever touching the network', async () => {
+    const root = setupWorkspace()
+    const original = process.env.GOOGLE_APPLICATION_CREDENTIALS
+    delete process.env.GOOGLE_APPLICATION_CREDENTIALS
+    const cwd = process.cwd()
+    process.chdir(root)
+    try {
+      await expect(main(['sheet', 'pull', 'docs/estimate.md'])).rejects.toThrow(/GOOGLE_APPLICATION_CREDENTIALS/)
+    } finally {
+      process.chdir(cwd)
+      if (original !== undefined) process.env.GOOGLE_APPLICATION_CREDENTIALS = original
+    }
+  })
+
+  it('help text lists the sheet command', async () => {
+    const logs: string[] = []
+    const spy = vi.spyOn(console, 'log').mockImplementation((msg: string) => logs.push(msg))
+    const code = await main(['help'])
+    spy.mockRestore()
+    expect(code).toBe(0)
+    expect(logs.join('\n')).toContain('sheet pull <doc>')
+    expect(logs.join('\n')).toContain('sheet push <doc>')
   })
 })

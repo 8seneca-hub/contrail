@@ -66,6 +66,9 @@ export interface Config {
   site?: { host: 'vercel' }
   /** Archify CLI location. When `bin` is absent, `archify` is resolved from PATH. */
   archify?: { bin?: string }
+  /** Google Sheets service-account credentials. `GOOGLE_APPLICATION_CREDENTIALS` takes precedence
+   * over `credentialsPath` when both are set — see `src/sheets/client.ts:credentialsPathFor`. */
+  sheets?: { credentialsPath?: string }
 }
 
 export interface RenderedDiagram {

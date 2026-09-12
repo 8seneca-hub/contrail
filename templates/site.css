@@ -330,6 +330,29 @@ figcaption {
   font-size: 0.9rem;
 }
 
+figure.sheet {
+  margin: 1.5rem 0;
+}
+
+figure.sheet .sheet-table {
+  margin-top: 0.5rem;
+}
+
+.sheet-stale {
+  margin: 0.5rem 0;
+  padding: 0.5rem 0.75rem;
+  background: var(--status-draft-bg);
+  color: var(--status-draft-fg);
+  border-radius: 6px;
+  font-weight: 600;
+}
+
+.sheet-meta {
+  margin-top: 0.5rem;
+  color: var(--fg-muted);
+  font-size: 0.9rem;
+}
+
 /* Index page */
 .doc-list {
   list-style: none;

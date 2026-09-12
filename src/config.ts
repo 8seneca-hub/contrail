@@ -60,6 +60,15 @@ export function loadConfig(configPath: string): Config {
     }
   }
 
+  if (raw.sheets !== undefined) {
+    if (typeof raw.sheets !== 'object' || raw.sheets === null) {
+      throw new ConfigError(`${configPath}: \`sheets\` must be an object.`)
+    }
+    if (raw.sheets.credentialsPath !== undefined && typeof raw.sheets.credentialsPath !== 'string') {
+      throw new ConfigError(`${configPath}: \`sheets.credentialsPath\` must be a string.`)
+    }
+  }
+
   return {
     root: dirname(configPath),
     plane: {
@@ -71,5 +80,6 @@ export function loadConfig(configPath: string): Config {
     docs: raw.docs,
     site: raw.site,
     archify: raw.archify,
+    sheets: raw.sheets,
   }
 }

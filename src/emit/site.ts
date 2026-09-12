@@ -10,8 +10,10 @@ import { assetIdForDiagram, assetIdForFile, collectAssets, collectDiagrams } fro
 import { matchAlert, stripAlertMarker, type AlertKind } from '../blocks/alert.js'
 import { parseArchifyMeta } from '../blocks/archify.js'
 import { parseArtifactMeta } from '../blocks/artifact.js'
+import { parseSheetMeta, type SheetMeta } from '../blocks/sheet.js'
 import type { ArchifyOptions } from '../render/archify.js'
 import type { Mmdc } from '../render/mermaid.js'
+import { getSnapshot, sheetUrlFor, type SheetSnapshot } from '../sheets/snapshot.js'
 import type { Audience, Doc } from '../types.js'
 
 const SITE_CSS_PATH = fileURLToPath(new URL('../../templates/site.css', import.meta.url))
@@ -84,6 +86,37 @@ function figureForAsset(path: string, summary: string): string {
   )
 }
 
+/** Pads every row to the width of the widest row, so a ragged range (Google Sheets omits trailing
+ * empty cells) still renders a well-formed, rectangular table. */
+function padRows(rows: string[][]): string[][] {
+  const width = rows.reduce((max, row) => Math.max(max, row.length), 0)
+  return rows.map((row) => Array.from({ length: width }, (_, i) => row[i] ?? ''))
+}
+
+function htmlTableFor(rows: string[][]): string {
+  const body = padRows(rows)
+    .map((row) => `<tr>${row.map((cell) => `<td>${escapeHtml(cell)}</td>`).join('')}</tr>`)
+    .join('')
+  return `<table class="sheet-table">${body}</table>`
+}
+
+function figureForSheet(meta: SheetMeta, snapshot: SheetSnapshot): string {
+  const safeSummary = escapeHtml(meta.summary)
+  const staleNote = snapshot.stale
+    ? `<p class="sheet-stale">STALE: the live read failed; showing the cached snapshot from ` +
+      `${escapeHtml(snapshot.readAt)}.</p>`
+    : ''
+  return (
+    '<figure class="sheet">' +
+    `<figcaption>${safeSummary}</figcaption>` +
+    staleNote +
+    htmlTableFor(snapshot.values) +
+    `<p class="sheet-meta"><a href="${escapeHtml(sheetUrlFor(meta.id))}">Open in Google Sheets</a> ` +
+    `&mdash; read ${escapeHtml(snapshot.readAt)}</p>` +
+    '</figure>'
+  )
+}
+
 interface Replacement {
   /** Plain-text token stringify emits as `<p>TOKEN</p>`, swapped for the real markup afterward. */
   placeholder: string
@@ -124,6 +157,16 @@ function transformCodeBlocks(doc: Doc, tree: Root, ctx: SiteEmitContext): Replac
       const path = ctx.assetPaths[id]
       if (!path) throw new Error(`${where}: no rendered asset found for ${meta.fallback}`)
       markup = figureForAsset(path, meta.summary)
+    } else if (node.lang === 'sheet') {
+      const meta = parseSheetMeta(node.meta, where)
+      const snapshot = getSnapshot(doc, meta.id, meta.range)
+      if (!snapshot) {
+        throw new Error(
+          `${where}: no cached snapshot for spreadsheet ${meta.id} (range ${meta.range}). ` +
+            'Run `contrail sheet pull` first.',
+        )
+      }
+      markup = figureForSheet(meta, snapshot)
     }
     if (markup === undefined) return
 
