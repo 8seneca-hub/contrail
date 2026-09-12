@@ -2,8 +2,12 @@
   "name": "@8seneca/contrail",
   "version": "0.1.0",
   "type": "module",
-  "bin": { "contrail": "./dist/cli.js" },
-  "engines": { "node": ">=22" },
+  "bin": {
+    "contrail": "./dist/cli.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "vitest run",
@@ -28,6 +32,7 @@
   "devDependencies": {
     "@types/mdast": "^4.0.4",
     "@types/node": "^22.10.0",
+    "rehype-parse": "^9.0.1",
     "typescript": "^5.7.0",
     "vitest": "^2.1.8"
   }
