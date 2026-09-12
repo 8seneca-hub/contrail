@@ -1,0 +1,57 @@
+# contrail
+
+Generate project documentation once, in Markdown. Publish it to [Plane](https://plane.so)
+Pages for people to read, and to a static site for the documents that need to be explored
+rather than read — while the Markdown stays on disk, in git, as the thing coding agents
+consume.
+
+> **Status:** design complete, implementation not started.
+> See [the design document](docs/superpowers/specs/2026-09-12-contrail-design.md).
+
+## Why
+
+Plane Pages make a good team wiki, and Markdown in git makes good agent input. Keeping both
+by hand guarantees they drift apart. contrail derives both from one source and keeps them
+aligned over the life of the document — including when a decision arrives weeks after the
+document was written.
+
+## How it works
+
+One Markdown file per document. The build parses it once and emits three ways:
+
+| Output | Audience |
+|---|---|
+| the Markdown itself, plus a generated index | coding agents |
+| Plane-safe HTML, diagrams uploaded as page assets | the team, in Plane |
+| a static site with live diagrams, navigation and search | the team, when exploring |
+
+Mermaid diagrams render to images for Plane and to scalable SVG for the site. Blocks that
+need real interactivity are allowed — but only if they also declare a static fallback and a
+prose summary, so a document can never contain something the Markdown readers cannot see.
+
+Documents absorb later decisions through an inbox rather than by direct rewriting: captured
+discussion, work-item comments and edits made in Plane all become proposed git diffs that a
+human reviews before they are published. Decisions themselves are ADRs, with a supersession
+chain.
+
+## Constraints worth knowing up front
+
+contrail is shaped by what Plane actually permits, verified against its API:
+
+- Updating a page **replaces the entire body**, so every publish renders the whole document,
+  and contrail refuses to overwrite a page a human has edited in Plane unless forced.
+- Plane sanitizes HTML into its editor schema, so a self-contained interactive artifact
+  cannot live inside a page. It lives on the static site and the page links to it.
+- Page images must be uploaded as Plane assets rather than hot-linked, because an
+  access-protected external image will not load for readers.
+- Plane exposes work item comments through its API, but not page comments — so inbound
+  discussion is captured from work items.
+
+## Status
+
+Not yet implemented. The design is settled and reviewed; see the milestones in the design
+document.
+
+## License
+
+MIT
