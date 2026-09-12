@@ -5,8 +5,9 @@ import rehypeStringify from 'rehype-stringify'
 import remarkRehype from 'remark-rehype'
 import { unified } from 'unified'
 import { visit } from 'unist-util-visit'
-import type { Code, Parent, Root } from 'mdast'
+import type { Blockquote, Code, Parent, Root, RootContent } from 'mdast'
 import { assetIdForDiagram, assetIdForFile, collectAssets, collectDiagrams } from '../assets.js'
+import { matchAlert, stripAlertMarker, type AlertKind } from '../blocks/alert.js'
 import { parseArchifyMeta } from '../blocks/archify.js'
 import { parseArtifactMeta } from '../blocks/artifact.js'
 import type { ArchifyOptions } from '../render/archify.js'
@@ -113,6 +114,48 @@ function transformCodeBlocks(doc: Doc, tree: Root, ctx: SiteEmitContext): Replac
   return replacements
 }
 
+const ALERT_CLASS: Record<AlertKind, string> = {
+  NOTE: 'note',
+  TIP: 'tip',
+  IMPORTANT: 'important',
+  WARNING: 'warning',
+  CAUTION: 'caution',
+}
+
+/** Renders a detached list of mdast nodes (an alert's stripped body) to HTML,
+ * independent of the document's own tree walk — cheap, and keeps the alert
+ * transform self-contained the same way `figureForDiagram` is. */
+function renderNodesToHtml(nodes: RootContent[]): string {
+  const processor = unified().use(remarkRehype).use(rehypeStringify)
+  return processor.stringify(processor.runSync({ type: 'root', children: nodes } as Root))
+}
+
+/**
+ * GitHub-style `> [!NOTE]` alerts become styled callouts. Same placeholder
+ * technique as `transformCodeBlocks`: the blockquote's own children are
+ * pre-rendered to HTML (they may hold arbitrary markdown) and swapped in
+ * after the main stringify pass, so the marker text never reaches the page.
+ */
+function transformAlerts(tree: Root): Replacement[] {
+  const replacements: Replacement[] = []
+  visit(tree, 'blockquote', (node: Blockquote, index: number | undefined, parent: Parent | undefined) => {
+    if (parent === undefined || index === undefined) return
+    const alert = matchAlert(node)
+    if (!alert) return
+    stripAlertMarker(node)
+
+    const innerHtml = renderNodesToHtml(node.children as RootContent[])
+    const html =
+      `<div class="callout callout-${ALERT_CLASS[alert.kind]}">` +
+      `<p class="callout-label">${escapeHtml(alert.label)}</p>${innerHtml}</div>`
+
+    const placeholder = `CONTRAILSITEALERT${replacements.length}PLACEHOLDER`
+    replacements.push({ placeholder, html })
+    parent.children.splice(index, 1, { type: 'paragraph', children: [{ type: 'text', value: placeholder }] })
+  })
+  return replacements
+}
+
 function pageShell(title: string, body: string): string {
   return `<!doctype html>
 <html lang="en">
@@ -132,6 +175,7 @@ ${body}
 export function emitSite(doc: Doc, ctx: SiteEmitContext): string {
   const tree = structuredClone(doc.tree) as Root
   const replacements = transformCodeBlocks(doc, tree, ctx)
+  replacements.push(...transformAlerts(tree))
 
   const processor = unified().use(remarkRehype).use(rehypeStringify)
   let bodyHtml = processor.stringify(processor.runSync(tree))

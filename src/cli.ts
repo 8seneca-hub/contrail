@@ -2,6 +2,7 @@ import { existsSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import { globSync } from 'tinyglobby'
+import { checkDocs, checkExitCode, writeLlmsTxt } from './check.js'
 import { findConfigPath, loadConfig } from './config.js'
 import { buildSite } from './emit/site.js'
 import { loadLock, saveLock } from './lock.js'
@@ -112,6 +113,12 @@ export function siteOutDirFor(config: Config, out: string | undefined): string {
   return resolve(config.root, out ?? 'site')
 }
 
+/** One line per finding: severity, rule id, location, then the actionable message. */
+export function formatFinding(f: { doc: string; line?: number; rule: string; message: string; severity: string }): string {
+  const where = f.line ? `${f.doc}:${f.line}` : f.doc
+  return `${f.severity.toUpperCase().padEnd(5)} [${f.rule}] ${where}  ${f.message}`
+}
+
 function requireApiKey(): string {
   const key = process.env.PLANE_API_KEY
   if (!key) {
@@ -129,6 +136,8 @@ export async function main(argv: string[]): Promise<number> {
       force: { type: 'boolean', default: false },
       only: { type: 'string' },
       out: { type: 'string' },
+      strict: { type: 'boolean', default: false },
+      index: { type: 'boolean', default: false },
     },
   })
 
@@ -137,7 +146,7 @@ export async function main(argv: string[]): Promise<number> {
   if (command === 'help') {
     console.log(
       'contrail init | build | status | publish [--dry-run] [--force] [--only <substring>] | ' +
-        'site [--out <dir>]',
+        'site [--out <dir>] | check [--strict] [--index]',
     )
     return 0
   }
@@ -165,6 +174,25 @@ export async function main(argv: string[]): Promise<number> {
     })
     console.log(`Wrote ${result.pages.length} page(s) and ${result.diagrams} diagram(s) to ${result.outDir}`)
     return 0
+  }
+
+  if (command === 'check') {
+    const findings = checkDocs(allDocs, { strict: values.strict })
+    for (const finding of findings) console.log(formatFinding(finding))
+
+    if (values.index) {
+      const path = writeLlmsTxt(config, allDocs)
+      console.log(`Wrote ${path}`)
+    }
+
+    if (findings.length === 0) {
+      console.log('contrail check: clean.')
+    } else {
+      const errors = findings.filter((f) => f.severity === 'error').length
+      const warnings = findings.length - errors
+      console.log(`contrail check: ${errors} error(s), ${warnings} warning(s).`)
+    }
+    return checkExitCode(findings, Boolean(values.strict))
   }
 
   if (command === 'status') {

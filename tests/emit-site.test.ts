@@ -188,4 +188,86 @@ graph TD; A-->B;
     expect(page).toContain('<img src="assets/')
     expect(page).toContain('<figcaption>An explorer</figcaption>')
   })
+
+  it('keeps loading="lazy" on the diagram iframe', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'contrail-site-lazy-'))
+    writeFileSync(join(root, 'a.workflow.json'), '{"nodes":[]}')
+    const doc = writeDoc(
+      root,
+      'doc.md',
+      `${FRONTMATTER}\`\`\`archify {type=workflow, src=./a.workflow.json, summary="A diagram."}
+\`\`\`
+`,
+    )
+    const outDir = join(root, 'out')
+    await buildSite({ docs: [doc], outDir, cacheDir: join(root, '.cache'), archify: { runner: okArchifyRunner() } })
+
+    const page = readFileSync(join(outDir, 'doc.html'), 'utf8')
+    expect(page).toContain('loading="lazy"')
+  })
+
+  it('renders a [!WARNING] alert as a styled callout with the marker text gone', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'contrail-site-alert-'))
+    const doc = writeDoc(
+      root,
+      'doc.md',
+      `${FRONTMATTER}> [!WARNING]
+> This is dangerous.
+`,
+    )
+    const outDir = join(root, 'out')
+    await buildSite({ docs: [doc], outDir, cacheDir: join(root, '.cache') })
+
+    const page = readFileSync(join(outDir, 'doc.html'), 'utf8')
+    expect(page).toContain('callout-warning')
+    expect(page).toContain('This is dangerous.')
+    expect(page).not.toContain('[!WARNING]')
+    // The blockquote must be gone entirely — this is a callout, not a quote.
+    expect(page).not.toContain('<blockquote>')
+  })
+
+  it('renders each of the five alert kinds as its own callout class', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'contrail-site-alert-kinds-'))
+    const doc = writeDoc(
+      root,
+      'doc.md',
+      `${FRONTMATTER}> [!NOTE]
+> A note.
+
+> [!TIP]
+> A tip.
+
+> [!IMPORTANT]
+> Important stuff.
+
+> [!WARNING]
+> A warning.
+
+> [!CAUTION]
+> Be careful.
+`,
+    )
+    const outDir = join(root, 'out')
+    await buildSite({ docs: [doc], outDir, cacheDir: join(root, '.cache') })
+
+    const page = readFileSync(join(outDir, 'doc.html'), 'utf8')
+    for (const cls of ['callout-note', 'callout-tip', 'callout-important', 'callout-warning', 'callout-caution']) {
+      expect(page).toContain(cls)
+    }
+    for (const marker of ['[!NOTE]', '[!TIP]', '[!IMPORTANT]', '[!WARNING]', '[!CAUTION]']) {
+      expect(page).not.toContain(marker)
+    }
+  })
+
+  it('leaves an ordinary blockquote untouched', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'contrail-site-quote-'))
+    const doc = writeDoc(root, 'doc.md', `${FRONTMATTER}> Just a quote, not an alert.\n`)
+    const outDir = join(root, 'out')
+    await buildSite({ docs: [doc], outDir, cacheDir: join(root, '.cache') })
+
+    const page = readFileSync(join(outDir, 'doc.html'), 'utf8')
+    expect(page).toContain('<blockquote>')
+    expect(page).toContain('Just a quote, not an alert.')
+    expect(page).not.toContain('callout')
+  })
 })

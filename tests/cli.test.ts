@@ -347,4 +347,105 @@ describe('site command (via main)', () => {
       expect(logs.join('\n')).toContain('site [--out <dir>]')
     })
   })
+
+  it('help text lists the check command', () => {
+    const logs: string[] = []
+    const spy = vi.spyOn(console, 'log').mockImplementation((msg: string) => {
+      logs.push(msg)
+    })
+    return main(['help']).then((code) => {
+      spy.mockRestore()
+      expect(code).toBe(0)
+      expect(logs.join('\n')).toContain('check [--strict] [--index]')
+    })
+  })
+})
+
+describe('check command (via main)', () => {
+  function setupWorkspace() {
+    const root = mkdtempSync(join(tmpdir(), 'contrail-check-cli-'))
+    mkdirSync(join(root, 'docs'), { recursive: true })
+    writeFileSync(
+      join(root, 'contrail.config.ts'),
+      "export default { plane: { baseUrl: 'https://plane.test', workspace: 'acme' }, repos: {}, " +
+        "docs: ['./docs/**/*.md'] }\n",
+    )
+    return root
+  }
+
+  it('exits 0 on a clean workspace and reports "clean"', async () => {
+    const root = setupWorkspace()
+    writeFileSync(
+      join(root, 'docs', 'clean.md'),
+      '---\ntitle: Clean\nsummary: A clean doc.\nstatus: current\n---\n\nShort prose, nothing to flag.\n',
+    )
+
+    const logs: string[] = []
+    const spy = vi.spyOn(console, 'log').mockImplementation((msg: string) => logs.push(msg))
+    const cwd = process.cwd()
+    process.chdir(root)
+    let code: number
+    try {
+      code = await main(['check'])
+    } finally {
+      process.chdir(cwd)
+      spy.mockRestore()
+    }
+
+    expect(code).toBe(0)
+    expect(logs.join('\n')).toContain('clean')
+  })
+
+  it('exits 0 on warnings without --strict, and 1 with --strict', async () => {
+    const root = setupWorkspace()
+    writeFileSync(
+      join(root, 'docs', 'stale.md'),
+      '---\ntitle: Stale\nsummary: A stale doc.\nstatus: stale\n---\n\nBody.\n',
+    )
+
+    const cwd = process.cwd()
+    process.chdir(root)
+    try {
+      expect(await main(['check'])).toBe(0)
+      expect(await main(['check', '--strict'])).toBe(1)
+    } finally {
+      process.chdir(cwd)
+    }
+  })
+
+  it('exits 1 for a missing-summary error even without --strict', async () => {
+    const root = setupWorkspace()
+    writeFileSync(
+      join(root, 'docs', 'bad.md'),
+      '---\ntitle: Bad\nsummary: A bad doc.\nstatus: current\n---\n\n```archify {type=workflow, src=./a.json}\n```\n',
+    )
+
+    const cwd = process.cwd()
+    process.chdir(root)
+    try {
+      expect(await main(['check'])).toBe(1)
+    } finally {
+      process.chdir(cwd)
+    }
+  })
+
+  it('--index writes docs/llms.txt grouped by kind', async () => {
+    const root = setupWorkspace()
+    writeFileSync(
+      join(root, 'docs', 'a.md'),
+      '---\ntitle: A\nsummary: Doc A.\nstatus: current\nkind: reference\n---\n\nBody.\n',
+    )
+
+    const cwd = process.cwd()
+    process.chdir(root)
+    try {
+      expect(await main(['check', '--index'])).toBe(0)
+    } finally {
+      process.chdir(cwd)
+    }
+
+    const llmsTxt = readFileSync(join(root, 'docs', 'llms.txt'), 'utf8')
+    expect(llmsTxt).toContain('## Reference')
+    expect(llmsTxt).toContain('[A]')
+  })
 })

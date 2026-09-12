@@ -2,10 +2,15 @@ import type { Root } from 'mdast'
 
 export type DocStatus = 'draft' | 'review' | 'current' | 'stale'
 
+/** Diátaxis document kind. Optional: retrofitting it across an existing docs
+ * tree must not break a build. Absent means `mixed-mode` does not fire. */
+export type DocKind = 'tutorial' | 'how-to' | 'reference' | 'explanation'
+
 export interface Frontmatter {
   title: string
   summary: string
   status: DocStatus
+  kind?: DocKind
   repos?: string[]
   tags?: string[]
   decisions?: number[]
