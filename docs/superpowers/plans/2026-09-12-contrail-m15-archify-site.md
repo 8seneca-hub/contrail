@@ -72,6 +72,42 @@ answers a different question:
 6. Every diagram carries a `summary` that stands alone. A reader who cannot see the picture — an
    agent, or a person on a narrow screen — must still learn what it shows.
 
+## Research: what the authoring skill is built on
+
+The rules below are not invented. They come from four established sources, each answering a different
+question, plus one thing that only matters because agents read these documents.
+
+**Diátaxis — what KIND of document is this?** Four needs, four forms: tutorial (learning by doing),
+how-to (achieving a goal), reference (looking something up), explanation (understanding why). Its
+central claim, and the one worth enforcing: *mixing forms in one document is the most common
+documentation failure*. A how-to that keeps stopping to explain theory serves neither reader. contrail
+adds a `kind:` frontmatter field and the lint flags documents that mix modes.
+
+**C4 — how do you diagram architecture without drowning?** Hierarchical levels: system context,
+container, component, code. You do not put all four in one picture; you pick a level and stay there.
+This maps onto Archify's `views` feature exactly — one IR with several focused views beats five
+unrelated diagrams, because the reader keeps their bearings between them.
+
+**Anthropic's skill-authoring guidance — how should the skill itself read?** Context is a public good;
+assume the agent is already smart; match the degrees of freedom to the task's fragility. Applied here:
+the skill states rules and the type-selection table, and does not explain what a diagram is.
+
+**llms.txt — how do agents find their way in?** A concise, expert-level index in one predictable
+location beats crawling. contrail's agent-facing index should follow that convention rather than
+inventing a private format, so any agent that already understands llms.txt can navigate a contrail
+docs tree with no special knowledge.
+
+**What agents specifically need, beyond what humans need.** Agents read fragments, not documents, and
+they cannot ask a follow-up question:
+
+- **Self-contained sections.** "As mentioned above" is invisible to a reader who was handed one section.
+- **Absolute dates and versions.** "Recently" and "the current version" rot silently; `2026-09-12` and
+  `v1.4.0` do not.
+- **One fact in one place.** Duplicated facts drift, and an agent has no way to tell which copy is stale.
+- **Pinned source references.** `@repo/path:line` at a known commit, which contrail already resolves.
+- **Stable headings.** Agents cite them; renaming one breaks every citation.
+
+
 ---
 
 ### Task 1: Archify block parsing and config
@@ -182,6 +218,13 @@ exactly where to look.
 | `undiagrammed-doc` | A document over 400 words contains no diagram at all | warn |
 | `missing-summary` | A diagram block has no `summary` | error |
 | `stale-doc` | `status: stale` | warn |
+| `mixed-mode` | A `kind: how-to` or `kind: reference` document contains a section headed like explanation (`/why\|background\|rationale\|design note/i`), or a `kind: explanation` contains numbered imperative steps | warn |
+| `relative-time` | Prose contains `/\brecently\b\|\bcurrently\b\|\bthe current version\b\|\bas of now\b/i` — rots silently, and an agent cannot tell when it was written | warn |
+| `dangling-reference` | Prose contains `/\bas (mentioned\|described\|shown) above\b\|\bsee below\b/i` — invisible to an agent handed one section | warn |
+
+`kind` is a new optional frontmatter field: `tutorial | how-to | reference | explanation`. It is
+optional because retrofitting it across an existing docs tree should not break a build; when absent,
+`mixed-mode` does not fire.
 
 Two properties matter more than the heuristics themselves:
 
@@ -190,6 +233,12 @@ Two properties matter more than the heuristics themselves:
   not say what to do is a lint message people learn to ignore.
 - **Warnings never fail a build by default.** `--strict` is opt-in, for CI. Documentation tooling that
   blocks a commit over a missing picture trains people to bypass the tool.
+
+`contrail check` also gains `--index`, which writes `docs/llms.txt` in the llms.txt v2 convention: the
+project name as an H1, a one-line blockquote summary, then a flat list of every document as
+`- [Title](path): summary` grouped by `kind`. Stale documents are marked inline so an agent discounts
+them. This replaces the bespoke `INDEX.md` the M1 spec proposed — following a convention agents already
+understand beats inventing a private one.
 
 `plugin/skills/writing-docs/SKILL.md` carries the same rules in prose, as the guidance an agent reads
 before authoring a document: the type-selection table, the six rules, the block syntax, and the
@@ -206,4 +255,5 @@ reported as `error` while the rest are `warn`; `--strict` changes the exit code 
 - `contrail site` produces a browsable directory whose diagrams are interactive.
 - The agent-facing Markdown carries every summary and a link to each IR file.
 - `contrail check` reports undiagrammed flows with an actionable message, and `--strict` fails CI.
+- `contrail check --index` emits a valid `docs/llms.txt` an agent can navigate without special knowledge.
 - M1's Plane tests still pass untouched.
