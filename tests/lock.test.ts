@@ -53,14 +53,44 @@ describe('lock', () => {
     expect(combined).not.toBe(split)
   })
 
-  it('hashes empty parts array without throwing', () => {
-    expect(() => hashContent([])).not.toThrow()
-    expect(hashContent([])).toBeDefined()
+  it('length-prefix prevents literal separator ambiguity in content', () => {
+    // Real case: doc.body contains a line with '--', causing collision with old separator
+    const separated = hashContent(['body-X', 'asset-Y'])
+    const merged = hashContent(['body-X\n--\nasset-Y'])
+    expect(separated).not.toBe(merged)
   })
 
-  it('hashes single empty string without throwing', () => {
-    expect(() => hashContent([''])).not.toThrow()
-    expect(hashContent([''])).toBeDefined()
+  it('handles multi-byte UTF-8 characters at part boundaries', () => {
+    // Emoji (4 bytes in UTF-8): test that byte length, not string length, prevents collisions
+    const emojiSplit = hashContent(['🎯-part', 'two'])
+    const emojiMerged = hashContent(['🎯-parttwo'])
+    expect(emojiSplit).not.toBe(emojiMerged)
+
+    // Accented character (2 bytes in UTF-8)
+    const accentSplit = hashContent(['café', 'au'])
+    const accentMerged = hashContent(['caféau'])
+    expect(accentSplit).not.toBe(accentMerged)
+  })
+
+  it('hashes empty parts array, single empty string, and multiple empty strings all differently', () => {
+    const emptyArray = hashContent([])
+    const singleEmpty = hashContent([''])
+    const multiEmpty = hashContent(['', '', ''])
+
+    // All must be deterministic 32-char hex strings
+    expect(emptyArray).toMatch(/^[0-9a-f]{32}$/)
+    expect(singleEmpty).toMatch(/^[0-9a-f]{32}$/)
+    expect(multiEmpty).toMatch(/^[0-9a-f]{32}$/)
+
+    // All must be different from each other
+    expect(emptyArray).not.toBe(singleEmpty)
+    expect(emptyArray).not.toBe(multiEmpty)
+    expect(singleEmpty).not.toBe(multiEmpty)
+
+    // Verify determinism
+    expect(hashContent([])).toBe(emptyArray)
+    expect(hashContent([''])).toBe(singleEmpty)
+    expect(hashContent(['', '', ''])).toBe(multiEmpty)
   })
 
   it('loadLock handles non-existent directory gracefully', () => {
@@ -119,18 +149,4 @@ describe('lock', () => {
     expect(parsed).toEqual({ version: 1, docs: lock.docs })
   })
 
-  it('multiple empty strings produce same hash as empty array', () => {
-    const emptyArray = hashContent([])
-    const emptyStrings = hashContent(['', '', ''])
-    // They should be different because of the separator being applied
-    // Empty array: no updates to hash
-    // Multiple empty strings: separator applied between parts
-    expect(emptyArray).toBeDefined()
-    expect(emptyStrings).toBeDefined()
-  })
-
-  it('hashContent returns 32-character hex string', () => {
-    const hash = hashContent(['test'])
-    expect(hash).toMatch(/^[0-9a-f]{32}$/)
-  })
 })

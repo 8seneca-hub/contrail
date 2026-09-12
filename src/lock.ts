@@ -7,7 +7,15 @@ export const LOCK_FILENAME = 'contrail.lock.json'
 
 export function hashContent(parts: string[]): string {
   const hash = createHash('sha256')
-  for (const part of parts) hash.update(part).update('\n--\n')
+  for (const part of parts) {
+    // Length-prefix with byte length to prevent ambiguous concatenations.
+    // Use Buffer.byteLength for multi-byte UTF-8 chars, not string.length.
+    hash.update(String(Buffer.byteLength(part, 'utf8')))
+    hash.update(':')
+    hash.update(part)
+  }
+  // 32 hex chars = 128 bits, far beyond any collision risk for change detection.
+  // This is a staleness check, not a security primitive.
   return hash.digest('hex').slice(0, 32)
 }
 
