@@ -6,7 +6,7 @@ import { emitPlane } from '../emit/plane.js'
 import { hashContent } from '../lock.js'
 import type { Mmdc } from '../render/mermaid.js'
 import type { Config, Doc, Lock } from '../types.js'
-import type { PlaneApi } from './client.js'
+import { PlaneApiError, type PageRecord, type PlaneApi } from './client.js'
 
 export const MAX_HTML_BYTES = 10 * 1024 * 1024
 
@@ -14,6 +14,13 @@ export const MAX_HTML_BYTES = 10 * 1024 * 1024
 export const EMITTER_VERSION = '1'
 
 const CONCURRENCY = 4
+
+/**
+ * Placeholder body written when a page is first created, before assets are
+ * uploaded and the real HTML is known. Shared by the create call and the
+ * provisional lock entry so their hashes never drift apart.
+ */
+const STUB_BODY = '<p>Publishing</p>'
 
 export interface PublishOptions {
   dryRun?: boolean
@@ -76,19 +83,37 @@ export async function publishDocs(args: {
         const assets = await collectAssets(doc, { cacheDir, mmdc: options.mmdc })
         const contentHash = contentHashFor(doc, assets)
         const entry = lock.docs[doc.key]
-        const isNew = !entry || entry.archived === true
+        let isNew = !entry || entry.archived === true
 
         if (entry && !entry.archived) {
-          const remote = await client.getPage(entry.pageId)
-          const remoteHash = hashContent([remote.description_html])
-
-          if (entry.remoteHash && remoteHash !== entry.remoteHash && !options.force) {
-            result.blocked.push(doc.key)
-            return
+          let remote: PageRecord | undefined
+          try {
+            remote = await client.getPage(entry.pageId)
+          } catch (err) {
+            // The page was deleted out from under us: treat the document as
+            // new rather than aborting the whole batch. Any other failure is
+            // unexpected and must stay loud.
+            if (err instanceof PlaneApiError && err.status === 404) {
+              isNew = true
+            } else {
+              throw err
+            }
           }
-          if (entry.contentHash === contentHash && !options.force) {
-            result.skipped.push(doc.key)
-            return
+
+          if (remote) {
+            const remoteHash = hashContent([remote.description_html])
+            // A missing or empty remoteHash means we cannot prove the remote
+            // body is what we last wrote (e.g. a hand-edited or migrated
+            // lockfile). Unknown state fails safe: block, don't overwrite.
+            const knownRemote = typeof entry.remoteHash === 'string' && entry.remoteHash.length > 0
+            if ((!knownRemote || remoteHash !== entry.remoteHash) && !options.force) {
+              result.blocked.push(doc.key)
+              return
+            }
+            if (entry.contentHash === contentHash && !options.force) {
+              result.skipped.push(doc.key)
+              return
+            }
           }
         }
 
@@ -97,9 +122,17 @@ export async function publishDocs(args: {
           return
         }
 
-        const pageId = isNew
-          ? (await client.createPage({ name: doc.frontmatter.title, description_html: '<p>Publishing</p>' })).id
-          : entry!.pageId
+        let pageId: string
+        if (isNew) {
+          pageId = (await client.createPage({ name: doc.frontmatter.title, description_html: STUB_BODY })).id
+          // Provisional entry: if a later step throws, this is recoverable.
+          // The next run's guard will see a remoteHash matching the stub body
+          // we just wrote (so it won't block) and an empty contentHash (so it
+          // won't skip), and will reuse this page instead of creating another.
+          lock.docs[doc.key] = { pageId, contentHash: '', remoteHash: hashContent([STUB_BODY]), assets: {} }
+        } else {
+          pageId = entry!.pageId
+        }
 
         const uniqueAssets = dedupeAssetsById(assets)
         const assetIds: Record<string, string> = {}
@@ -145,8 +178,10 @@ export async function publishDocs(args: {
 
   for (const [key, entry] of Object.entries(lock.docs)) {
     if (present.has(key) || entry.archived) continue
-    if (!options.dryRun) await client.archivePage(entry.pageId)
-    lock.docs[key] = { ...entry, archived: true }
+    if (!options.dryRun) {
+      await client.archivePage(entry.pageId)
+      lock.docs[key] = { ...entry, archived: true }
+    }
     result.archived.push(key)
   }
 

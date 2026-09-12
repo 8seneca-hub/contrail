@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { parseDoc } from '../src/parse.js'
 import { hashContent } from '../src/lock.js'
 import { MAX_HTML_BYTES, publishDocs, type PublishOptions } from '../src/plane/publish.js'
-import type { PlaneApi } from '../src/plane/client.js'
+import { PlaneApiError, type PlaneApi } from '../src/plane/client.js'
 import type { Config, Doc, Lock } from '../src/types.js'
 
 const DOC = `---
@@ -140,10 +140,13 @@ describe('publishDocs', () => {
     }
     const client = fakeClient()
 
+    const before = structuredClone(lock.docs['doc.md']!)
     const result = await run({ doc, root, client, lock })
 
     expect(result.blocked).toEqual(['doc.md'])
     expect(client.calls).not.toContain('updatePage')
+    // Blocking must not touch the lock at all.
+    expect(lock.docs['doc.md']).toEqual(before)
   })
 
   it('overwrites the human edit when force is set, and writes the correct body', async () => {
@@ -213,6 +216,32 @@ describe('publishDocs', () => {
 
     expect(result.archived).toEqual([])
     expect(client.calls).not.toContain('archivePage')
+  })
+
+  it('reports a would-be archive during a dry run without mutating the lock or calling archivePage', async () => {
+    const { root } = fixture()
+    const client = fakeClient()
+    const lock: Lock = {
+      version: 1,
+      docs: { 'gone.md': { pageId: 'page-9', contentHash: 'c', remoteHash: 'r', assets: {} } },
+    }
+    const before = structuredClone(lock.docs['gone.md']!)
+
+    const result = await publishDocs({
+      config,
+      docs: [],
+      client,
+      lock,
+      cacheDir: join(root, '.cache'),
+      options: { dryRun: true },
+    })
+
+    expect(result.archived).toEqual(['gone.md'])
+    expect(client.calls).not.toContain('archivePage')
+    // A dry run must not set `archived: true`, or the next real run would see
+    // it and skip archiving forever, having never actually archived the page.
+    expect(lock.docs['gone.md']).toEqual(before)
+    expect(lock.docs['gone.md']?.archived).toBeUndefined()
   })
 
   it('creates a new page for a re-added document whose lock entry was archived', async () => {
@@ -331,5 +360,126 @@ graph TD; A-->B;
     expect(result.created).toHaveLength(8)
     expect(peak).toBeLessThanOrEqual(4)
     expect(peak).toBeGreaterThan(1)
+  })
+
+  it('blocks when remoteHash is empty: cannot prove the remote body is what we wrote', async () => {
+    const { root, doc } = fixture()
+    const lock: Lock = {
+      version: 1,
+      docs: { 'doc.md': { pageId: 'page-1', contentHash: 'stale', remoteHash: '', assets: {} } },
+    }
+    const before = structuredClone(lock.docs['doc.md']!)
+    const client = fakeClient()
+
+    const result = await run({ doc, root, client, lock })
+
+    expect(result.blocked).toEqual(['doc.md'])
+    expect(client.calls).not.toContain('updatePage')
+    expect(lock.docs['doc.md']).toEqual(before)
+  })
+
+  it('blocks when remoteHash is absent entirely (hand-edited or migrated lockfile)', async () => {
+    const { root, doc } = fixture()
+    // Deliberately malformed: `loadLock` does an unvalidated JSON.parse, so a
+    // hand-edited lockfile can easily produce an entry missing this field.
+    const lock = {
+      version: 1,
+      docs: { 'doc.md': { pageId: 'page-1', contentHash: 'stale', assets: {} } },
+    } as unknown as Lock
+    const client = fakeClient()
+
+    const result = await run({ doc, root, client, lock })
+
+    expect(result.blocked).toEqual(['doc.md'])
+    expect(client.calls).not.toContain('updatePage')
+  })
+
+  it('force still overrides the guard when remoteHash is empty or absent', async () => {
+    const { root, doc } = fixture()
+    const emptyLock: Lock = {
+      version: 1,
+      docs: { 'doc.md': { pageId: 'page-1', contentHash: 'stale', remoteHash: '', assets: {} } },
+    }
+    const emptyResult = await run({ doc, root, client: fakeClient(), lock: emptyLock, options: { force: true } })
+    expect(emptyResult.updated).toEqual(['doc.md'])
+
+    const { root: root2, doc: doc2 } = fixture()
+    const absentLock = {
+      version: 1,
+      docs: { 'doc.md': { pageId: 'page-1', contentHash: 'stale', assets: {} } },
+    } as unknown as Lock
+    const absentResult = await run({ doc: doc2, root: root2, client: fakeClient(), lock: absentLock, options: { force: true } })
+    expect(absentResult.updated).toEqual(['doc.md'])
+  })
+
+  it('treats a 404 from getPage as a deleted page and creates a fresh one instead of aborting', async () => {
+    const { root, doc } = fixture()
+    const lock: Lock = {
+      version: 1,
+      docs: { 'doc.md': { pageId: 'page-gone', contentHash: 'stale', remoteHash: 'stale-remote', assets: {} } },
+    }
+    const client = fakeClient({
+      getPage: async () => {
+        throw new PlaneApiError('page not found', 404, '')
+      },
+    })
+
+    const result = await run({ doc, root, client, lock })
+
+    expect(result.created).toEqual(['doc.md'])
+    expect(client.calls).toContain('createPage')
+    expect(client.calls).toContain('updatePage')
+    expect(lock.docs['doc.md']?.pageId).not.toBe('page-gone')
+  })
+
+  it('propagates a non-404 error from getPage rather than swallowing it', async () => {
+    const { root, doc } = fixture()
+    const lock: Lock = {
+      version: 1,
+      docs: { 'doc.md': { pageId: 'page-1', contentHash: 'stale', remoteHash: 'stale-remote', assets: {} } },
+    }
+    const client = fakeClient({
+      getPage: async () => {
+        throw new PlaneApiError('server error', 500, '')
+      },
+    })
+
+    await expect(run({ doc, root, client, lock })).rejects.toThrow(/server error/)
+    expect(client.calls).not.toContain('updatePage')
+  })
+
+  it('recovers from a crash right after page creation without creating a duplicate page', async () => {
+    const { root, doc } = fixture()
+    const lock: Lock = { version: 1, docs: {} }
+    const client = fakeClient()
+
+    let uploadAttempts = 0
+    const originalCreateAssetUpload = client.createAssetUpload
+    client.createAssetUpload = async (input) => {
+      uploadAttempts++
+      if (uploadAttempts === 1) throw new Error('network blip during asset upload')
+      return originalCreateAssetUpload(input)
+    }
+
+    await expect(run({ doc, root, client, lock })).rejects.toThrow(/network blip/)
+
+    const provisional = lock.docs['doc.md']
+    expect(provisional).toBeDefined()
+    expect(provisional?.contentHash).toBe('')
+    expect(client.calls.filter((c) => c === 'createPage')).toHaveLength(1)
+
+    // The provisional remoteHash must match the actual stub body Plane is
+    // holding right now, or the guard on the next run would block instead of
+    // recovering.
+    const remoteNow = await client.getPage(provisional!.pageId)
+    expect(hashContent([remoteNow.description_html])).toBe(provisional!.remoteHash)
+
+    const result = await run({ doc, root, client, lock })
+
+    expect(result.blocked).toEqual([])
+    expect(result.created.concat(result.updated)).toEqual(['doc.md'])
+    expect(client.calls.filter((c) => c === 'createPage')).toHaveLength(1)
+    expect(lock.docs['doc.md']?.pageId).toBe(provisional!.pageId)
+    expect(lock.docs['doc.md']?.contentHash).not.toBe('')
   })
 })
