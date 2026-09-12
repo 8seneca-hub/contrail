@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -7,9 +7,11 @@ import {
   blockedMessageFor,
   exitCodeFor,
   findDocs,
+  main,
   publishArgsFor,
   publishAndSave,
   runInit,
+  siteOutDirFor,
 } from '../src/cli.js'
 import { loadConfig } from '../src/config.js'
 import { hashContent, loadLock } from '../src/lock.js'
@@ -280,5 +282,69 @@ describe('publishAndSave', () => {
 
     expect(result.created).toEqual([doc.key])
     expect(existsSync(join(root, 'contrail.lock.json'))).toBe(false)
+  })
+})
+
+describe('siteOutDirFor', () => {
+  const config: Config = {
+    root: '/workspace',
+    plane: { baseUrl: 'https://plane.test', workspace: 'acme' },
+    repos: {},
+    docs: ['./docs/**/*.md'],
+  }
+
+  it('defaults to <config.root>/site when --out is omitted', () => {
+    expect(siteOutDirFor(config, undefined)).toBe('/workspace/site')
+  })
+
+  it('resolves a relative --out against config.root', () => {
+    expect(siteOutDirFor(config, './public')).toBe('/workspace/public')
+  })
+
+  it('leaves an absolute --out untouched', () => {
+    expect(siteOutDirFor(config, '/tmp/out')).toBe('/tmp/out')
+  })
+})
+
+describe('site command (via main)', () => {
+  it('builds a site with an index page and one page per document', async () => {
+    // No mermaid/artifact/archify blocks in this doc, so nothing here can
+    // reach a real subprocess — safe to run straight through main().
+    const root = mkdtempSync(join(tmpdir(), 'contrail-site-cli-'))
+    mkdirSync(join(root, 'docs'), { recursive: true })
+    writeFileSync(
+      join(root, 'docs', 'plain.md'),
+      '---\ntitle: Plain\nsummary: Plain docs\nstatus: current\n---\n\nJust prose, no diagrams.\n',
+    )
+    writeFileSync(
+      join(root, 'contrail.config.ts'),
+      "export default { plane: { baseUrl: 'https://plane.test', workspace: 'acme' }, repos: {}, " +
+        "docs: ['./docs/**/*.md'] }\n",
+    )
+
+    const cwd = process.cwd()
+    process.chdir(root)
+    try {
+      expect(await main(['site', '--out', './site'])).toBe(0)
+    } finally {
+      process.chdir(cwd)
+    }
+
+    expect(existsSync(join(root, 'site', 'index.html'))).toBe(true)
+    expect(existsSync(join(root, 'site', 'docs__plain.html'))).toBe(true)
+    expect(existsSync(join(root, 'site', 'site.css'))).toBe(true)
+    expect(readFileSync(join(root, 'site', 'index.html'), 'utf8')).toContain('Plain')
+  })
+
+  it('help text lists the site command and its --out flag', () => {
+    const logs: string[] = []
+    const spy = vi.spyOn(console, 'log').mockImplementation((msg: string) => {
+      logs.push(msg)
+    })
+    return main(['help']).then((code) => {
+      spy.mockRestore()
+      expect(code).toBe(0)
+      expect(logs.join('\n')).toContain('site [--out <dir>]')
+    })
   })
 })

@@ -299,5 +299,93 @@ More.
       expect(out).toContain('2. Second')
       expect(out).toContain('![List diagram.](./list.png)')
     })
+
+    it('renders an archify block as the summary plus a relative link to the IR JSON', () => {
+      const withArchify = `---
+title: T
+summary: S
+status: current
+---
+
+Intro.
+
+\`\`\`archify {type=workflow, src=./diagrams/tool-call.workflow.json, summary="How a tool call flows through the policy gate."}
+\`\`\`
+
+Outro.
+`
+      const out = emitMarkdown(doc(withArchify))
+      expect(out).toContain('How a tool call flows through the policy gate.')
+      expect(out).toContain('./diagrams/tool-call.workflow.json')
+      // Never a rendered picture — the point is the typed IR link, not an image.
+      expect(out).not.toContain('![')
+    })
+
+    it('MULTIPLE archify blocks are each flattened to their own summary and link', () => {
+      const withArchify = `---
+title: T
+summary: S
+status: current
+---
+
+\`\`\`archify {type=architecture, src=./diagrams/a.json, summary="First diagram summary."}
+\`\`\`
+
+\`\`\`archify {type=sequence, src=./diagrams/b.json, summary="Second diagram summary."}
+\`\`\`
+`
+      const out = emitMarkdown(doc(withArchify))
+      expect(out).toContain('First diagram summary.')
+      expect(out).toContain('./diagrams/a.json')
+      expect(out).toContain('Second diagram summary.')
+      expect(out).toContain('./diagrams/b.json')
+    })
+
+    it('archify block with an invalid type throws with location info', () => {
+      const badType = `---
+title: T
+summary: S
+status: current
+---
+
+\`\`\`archify {type=bogus, src=./d.json, summary="Bad."}
+\`\`\`
+`
+      expect(() => emitMarkdown(doc(badType))).toThrow(/type/)
+      expect(() => emitMarkdown(doc(badType))).toThrow(/doc\.md/)
+    })
+
+    it('archify block missing summary throws with location info', () => {
+      const missingSummary = `---
+title: T
+summary: S
+status: current
+---
+
+\`\`\`archify {type=workflow, src=./d.json}
+\`\`\`
+`
+      expect(() => emitMarkdown(doc(missingSummary))).toThrow(/summary/)
+      expect(() => emitMarkdown(doc(missingSummary))).toThrow(/doc\.md/)
+    })
+
+    it('does not MUTATE the input Doc when an archify block is present', () => {
+      // Snapshot the INPUT TREE before the call and assert it unchanged after —
+      // never compare two successive outputs, which passes even if the
+      // emitter mutates in place on both calls.
+      const withArchify = `---
+title: T
+summary: S
+status: current
+---
+
+\`\`\`archify {type=workflow, src=./d.json, summary="A diagram."}
+\`\`\`
+`
+      const input = doc(withArchify)
+      const treeSnapshot = JSON.stringify(input.tree)
+      emitMarkdown(input)
+      expect(JSON.stringify(input.tree)).toBe(treeSnapshot)
+    })
   })
 })

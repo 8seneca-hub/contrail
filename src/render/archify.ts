@@ -37,8 +37,42 @@ const spawnArchify =
       child.on('close', (code) => resolve({ stdout, code: code ?? 1 }))
     })
 
+function binFor(opts: ArchifyOptions): string {
+  return opts.bin ?? 'archify'
+}
+
 function runnerFor(opts: ArchifyOptions): ArchifyRunner {
-  return opts.runner ?? spawnArchify(opts.bin ?? 'archify')
+  return opts.runner ?? spawnArchify(binFor(opts))
+}
+
+function isEnoent(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && (error as NodeJS.ErrnoException).code === 'ENOENT'
+}
+
+/**
+ * A first-time user with no `archify` on PATH and no `config.archify.bin` gets
+ * a raw `spawn archify ENOENT` otherwise — which names no problem and no fix.
+ * Rethrow with the actual install path; every other error propagates as-is.
+ */
+function enoentMessage(bin: string): string {
+  return (
+    `Archify was not found (tried to run \`${bin}\`). Install it with:\n` +
+    '  npx skills add tt-a1i/archify -g\n' +
+    'Or point `archify.bin` in contrail.config.ts at an existing checkout.'
+  )
+}
+
+async function invoke(
+  runner: ArchifyRunner,
+  args: string[],
+  bin: string,
+): Promise<{ stdout: string; code: number }> {
+  try {
+    return await runner(args)
+  } catch (error) {
+    if (isEnoent(error)) throw new Error(enoentMessage(bin))
+    throw error
+  }
 }
 
 /** Extracts the CLI's own message from a `--json` failure payload, falling back to raw output. */
@@ -64,7 +98,7 @@ export async function validateArchify(
   opts: ArchifyOptions = {},
 ): Promise<void> {
   const runner = runnerFor(opts)
-  const { stdout, code } = await runner(['validate', type, irPath, '--json'])
+  const { stdout, code } = await invoke(runner, ['validate', type, irPath, '--json'], binFor(opts))
   if (code !== 0) {
     throw new ArchifyValidationError(cliErrorMessage(stdout))
   }
@@ -84,7 +118,7 @@ export async function renderArchify(
   if (existsSync(htmlPath)) return { hash, htmlPath, irPath }
 
   const runner = runnerFor(opts)
-  const { stdout, code } = await runner(['render', type, irPath, htmlPath])
+  const { stdout, code } = await invoke(runner, ['render', type, irPath, htmlPath], binFor(opts))
   if (code !== 0) {
     throw new ArchifyValidationError(cliErrorMessage(stdout))
   }

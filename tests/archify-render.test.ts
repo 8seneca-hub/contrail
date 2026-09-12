@@ -136,6 +136,27 @@ describe('renderArchify', () => {
     expect(existsSync(expectedPath)).toBe(false)
   })
 
+  it('rethrows a plain ENOENT with actionable install guidance instead of the raw spawn error', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'contrail-archify-'))
+    const ir = irFile(dir, 'a.workflow.json', '{"a":1}')
+    const enoent: ArchifyRunner = vi.fn(async () => {
+      throw Object.assign(new Error('spawn archify ENOENT'), { code: 'ENOENT' })
+    })
+    await expect(validateArchify('workflow', ir, { runner: enoent })).rejects.toThrow(
+      /npx skills add tt-a1i\/archify -g/,
+    )
+    await expect(validateArchify('workflow', ir, { runner: enoent })).rejects.toThrow(/archify\.bin/)
+  })
+
+  it('leaves a non-ENOENT runner failure untouched', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'contrail-archify-'))
+    const ir = irFile(dir, 'a.workflow.json', '{"a":1}')
+    const boom: ArchifyRunner = vi.fn(async () => {
+      throw new Error('permission denied')
+    })
+    await expect(validateArchify('workflow', ir, { runner: boom })).rejects.toThrow(/^permission denied$/)
+  })
+
   it('uses opts.bin to build the default runner instead of the real binary when no runner is injected', async () => {
     // Point "bin" at a non-existent executable so a stray call to the real
     // resolution path fails loudly (ENOENT) rather than silently invoking a
@@ -147,5 +168,27 @@ describe('renderArchify', () => {
     await expect(
       renderArchify('workflow', ir, cache, { bin: '/nonexistent/archify-binary-for-tests' }),
     ).rejects.toThrow()
+  })
+
+  it('names the missing binary and the install command instead of a raw ENOENT', async () => {
+    // Exercises the real default-runner path end to end: a nonexistent `bin`
+    // makes the actual `spawn` reject with ENOENT, and this asserts the
+    // friendly message reaches the caller — not merely that it throws.
+    const dir = mkdtempSync(join(tmpdir(), 'contrail-archify-'))
+    const cache = mkdtempSync(join(tmpdir(), 'contrail-cache-'))
+    const ir = irFile(dir, 'a.workflow.json', '{"a":1}')
+    await expect(
+      renderArchify('workflow', ir, cache, { bin: '/nonexistent/archify-binary-for-tests' }),
+    ).rejects.toThrow(/npx skills add tt-a1i\/archify -g/)
+  })
+
+  it('leaves a non-ENOENT render failure untouched', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'contrail-archify-'))
+    const cache = mkdtempSync(join(tmpdir(), 'contrail-cache-'))
+    const ir = irFile(dir, 'a.workflow.json', '{"a":1}')
+    const boom: ArchifyRunner = vi.fn(async () => {
+      throw new Error('disk full')
+    })
+    await expect(renderArchify('workflow', ir, cache, { runner: boom })).rejects.toThrow(/^disk full$/)
   })
 })

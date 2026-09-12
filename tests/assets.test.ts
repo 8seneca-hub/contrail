@@ -1,10 +1,17 @@
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { visit } from 'unist-util-visit'
 import type { Code } from 'mdast'
-import { collectAssets, assetIdForDiagram, assetIdForFile } from '../src/assets.js'
+import {
+  collectAssets,
+  collectDiagrams,
+  assetIdForDiagram,
+  assetIdForFile,
+  diagramIdFor,
+} from '../src/assets.js'
+import { archifyHash, type ArchifyRunner } from '../src/render/archify.js'
 import { parseDoc } from '../src/parse.js'
 import type { Doc } from '../src/types.js'
 
@@ -212,5 +219,117 @@ graph TD; A-->B;
     const secondMmdc = fakeMmdc()
     await collectAssets(doc, { cacheDir, mmdc: secondMmdc })
     expect(secondMmdc).not.toHaveBeenCalled()
+  })
+})
+
+function okArchifyRunner(): ArchifyRunner {
+  return vi.fn(async (args: string[]) => {
+    if (args[0] === 'render') writeFileSync(args[3]!, '<html>diagram</html>')
+    return { stdout: '{"ok":true}', code: 0 }
+  })
+}
+
+describe('collectDiagrams', () => {
+  it('collects one DiagramPlan per archify block, never touching AssetPlan', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'contrail-diagrams-'))
+    writeFileSync(join(root, 'flow.workflow.json'), '{"nodes":[]}')
+    const body = `${FRONTMATTER}\`\`\`archify {type=workflow, src=./flow.workflow.json, summary="How the tool call flows."}
+\`\`\`
+`
+    const doc = writeDoc(root, body)
+    const runner = okArchifyRunner()
+    const diagrams = await collectDiagrams(doc, { cacheDir: join(root, '.cache'), archify: { runner } })
+
+    expect(diagrams).toHaveLength(1)
+    expect(diagrams[0]!.meta).toEqual({
+      type: 'workflow',
+      src: './flow.workflow.json',
+      summary: 'How the tool call flows.',
+    })
+    expect(diagrams[0]!.id).toBe(diagramIdFor(diagrams[0]!.hash))
+    expect(existsSync(diagrams[0]!.htmlPath)).toBe(true)
+
+    // The diagram must never leak into collectAssets' image-upload plan.
+    const assets = await collectAssets(doc, { cacheDir: join(root, '.cache') })
+    expect(assets).toEqual([])
+  })
+
+  it('leaves collectAssets blind to archify blocks even when mermaid/artifact are also present', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'contrail-diagrams-mixed-'))
+    writeFileSync(join(root, 'flow.workflow.json'), '{"nodes":[]}')
+    writeFileSync(join(root, 'flow.png'), 'png-bytes')
+    const body = `${FRONTMATTER}\`\`\`mermaid
+graph TD; A-->B;
+\`\`\`
+
+\`\`\`archify {type=workflow, src=./flow.workflow.json, summary="A workflow diagram."}
+\`\`\`
+
+\`\`\`artifact {fallback="./flow.png", summary="An explorer"}
+<div id="explorer"></div>
+\`\`\`
+`
+    const doc = writeDoc(root, body)
+    const mmdc = fakeMmdc()
+    const assets = await collectAssets(doc, { cacheDir: join(root, '.cache'), mmdc })
+    expect(assets).toHaveLength(2)
+    expect(assets.every((a) => !a.id.startsWith('archify:'))).toBe(true)
+  })
+
+  it('throws naming the location and the missing IR file when src does not resolve', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'contrail-diagrams-missing-'))
+    const body = `${FRONTMATTER}\`\`\`archify {type=workflow, src=./nope.workflow.json, summary="Missing."}
+\`\`\`
+`
+    const doc = writeDoc(root, body)
+    const runner = okArchifyRunner()
+    await expect(
+      collectDiagrams(doc, { cacheDir: join(root, '.cache'), archify: { runner } }),
+    ).rejects.toThrow(/doc\.md:\d+.*nope\.workflow\.json/)
+  })
+
+  it('a cache hit invokes the archify runner zero times', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'contrail-diagrams-cache-'))
+    writeFileSync(join(root, 'flow.workflow.json'), '{"nodes":[]}')
+    const body = `${FRONTMATTER}\`\`\`archify {type=workflow, src=./flow.workflow.json, summary="A workflow diagram."}
+\`\`\`
+`
+    const doc = writeDoc(root, body)
+    const cacheDir = join(root, '.cache')
+    const first = okArchifyRunner()
+    await collectDiagrams(doc, { cacheDir, archify: { runner: first } })
+
+    const second = okArchifyRunner()
+    await collectDiagrams(doc, { cacheDir, archify: { runner: second } })
+    expect(second).not.toHaveBeenCalled()
+  })
+
+  it('gives two different IR sources distinct hashes and ids', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'contrail-diagrams-distinct-'))
+    writeFileSync(join(root, 'a.workflow.json'), '{"nodes":["a"]}')
+    writeFileSync(join(root, 'b.workflow.json'), '{"nodes":["b"]}')
+    const body = `${FRONTMATTER}\`\`\`archify {type=workflow, src=./a.workflow.json, summary="A."}
+\`\`\`
+
+\`\`\`archify {type=workflow, src=./b.workflow.json, summary="B."}
+\`\`\`
+`
+    const doc = writeDoc(root, body)
+    const runner = okArchifyRunner()
+    const diagrams = await collectDiagrams(doc, { cacheDir: join(root, '.cache'), archify: { runner } })
+
+    expect(diagrams).toHaveLength(2)
+    expect(diagrams[0]!.hash).not.toBe(diagrams[1]!.hash)
+    expect(diagrams[0]!.id).not.toBe(diagrams[1]!.id)
+    expect(diagrams[0]!.hash).toBe(archifyHash('{"nodes":["a"]}'))
+  })
+
+  it('returns an empty plan for a document with no archify blocks', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'contrail-diagrams-empty-'))
+    const doc = writeDoc(root, `${FRONTMATTER}Just prose.\n`)
+    const runner = okArchifyRunner()
+    const diagrams = await collectDiagrams(doc, { cacheDir: join(root, '.cache'), archify: { runner } })
+    expect(diagrams).toEqual([])
+    expect(runner).not.toHaveBeenCalled()
   })
 })

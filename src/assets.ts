@@ -3,8 +3,10 @@ import { existsSync, readFileSync } from 'node:fs'
 import { dirname, extname, resolve } from 'node:path'
 import { visit } from 'unist-util-visit'
 import type { Code } from 'mdast'
+import { parseArchifyMeta, type ArchifyMeta } from './blocks/archify.js'
 import { parseArtifactMeta } from './blocks/artifact.js'
 import { diagramHash, renderMermaid, type Mmdc } from './render/mermaid.js'
+import { renderArchify, type ArchifyOptions } from './render/archify.js'
 import type { Doc } from './types.js'
 
 export interface AssetPlan {
@@ -68,6 +70,55 @@ export async function collectAssets(
       hash: createHash('sha256').update(bytes).digest('hex').slice(0, 16),
       filePath,
       contentType: CONTENT_TYPES[extname(filePath).toLowerCase()] ?? 'application/octet-stream',
+    })
+  }
+  return plans
+}
+
+/**
+ * An archify diagram is an ~800KB interactive HTML artifact, not an
+ * uploadable image — it must never enter `AssetPlan` (Plane's image-upload
+ * pipeline would try to send it to an image endpoint). It gets its own plan
+ * type and its own collection pass; `collectAssets` above is untouched.
+ */
+export interface DiagramPlan {
+  /** Stable identity computed from the document alone. */
+  id: string
+  /** Content hash of the IR file, used for change detection and caching. */
+  hash: string
+  htmlPath: string
+  irPath: string
+  meta: ArchifyMeta
+}
+
+export function diagramIdFor(hash: string): string {
+  return `archify:${hash}`
+}
+
+export async function collectDiagrams(
+  doc: Doc,
+  opts: { cacheDir: string; archify?: ArchifyOptions },
+): Promise<DiagramPlan[]> {
+  const codes: Code[] = []
+  visit(doc.tree, 'code', (node: Code) => {
+    if (node.lang === 'archify') codes.push(node)
+  })
+
+  const plans: DiagramPlan[] = []
+  for (const node of codes) {
+    const where = `${doc.key}:${node.position?.start.line ?? '?'}`
+    const meta = parseArchifyMeta(node.meta, where)
+    const irPath = resolve(dirname(doc.absPath), meta.src)
+    if (!existsSync(irPath)) {
+      throw new Error(`${where}: archify IR file not found: ${meta.src}`)
+    }
+    const rendered = await renderArchify(meta.type, irPath, opts.cacheDir, opts.archify)
+    plans.push({
+      id: diagramIdFor(rendered.hash),
+      hash: rendered.hash,
+      htmlPath: rendered.htmlPath,
+      irPath: rendered.irPath,
+      meta,
     })
   }
   return plans

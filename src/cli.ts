@@ -1,8 +1,9 @@
 import { existsSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import { globSync } from 'tinyglobby'
 import { findConfigPath, loadConfig } from './config.js'
+import { buildSite } from './emit/site.js'
 import { loadLock, saveLock } from './lock.js'
 import { parseDoc } from './parse.js'
 import { PlaneClient } from './plane/client.js'
@@ -106,6 +107,11 @@ export async function publishAndSave(args: {
   }
 }
 
+/** `--out` defaults to `<config.root>/site`; a relative `--out` resolves against `config.root`. */
+export function siteOutDirFor(config: Config, out: string | undefined): string {
+  return resolve(config.root, out ?? 'site')
+}
+
 function requireApiKey(): string {
   const key = process.env.PLANE_API_KEY
   if (!key) {
@@ -122,13 +128,17 @@ export async function main(argv: string[]): Promise<number> {
       'dry-run': { type: 'boolean', default: false },
       force: { type: 'boolean', default: false },
       only: { type: 'string' },
+      out: { type: 'string' },
     },
   })
 
   const command = positionals[0] ?? 'help'
 
   if (command === 'help') {
-    console.log('contrail init | build | status | publish [--dry-run] [--force] [--only <substring>]')
+    console.log(
+      'contrail init | build | status | publish [--dry-run] [--force] [--only <substring>] | ' +
+        'site [--out <dir>]',
+    )
     return 0
   }
 
@@ -143,6 +153,17 @@ export async function main(argv: string[]): Promise<number> {
 
   if (command === 'build') {
     console.log(`${docs.length} document(s) parsed with no errors.`)
+    return 0
+  }
+
+  if (command === 'site') {
+    const result = await buildSite({
+      docs: allDocs,
+      outDir: siteOutDirFor(config, values.out),
+      cacheDir: join(config.root, '.contrail', 'cache'),
+      archify: config.archify,
+    })
+    console.log(`Wrote ${result.pages.length} page(s) and ${result.diagrams} diagram(s) to ${result.outDir}`)
     return 0
   }
 
