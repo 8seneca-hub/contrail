@@ -530,6 +530,77 @@ graph TD; A-->B;
     expect(lock.docs['doc.md']?.contentHash).not.toBe('')
   })
 
+  it('recovers from a crash between createPage and the read-back without creating a duplicate page', async () => {
+    // Regression for Fix round 2: the provisional lock entry must be written
+    // with the send-side (STUB_BODY) hash IMMEDIATELY after createPage,
+    // before the getPage read-back — not after it succeeds. Before this fix,
+    // `lock.docs[doc.key] = {...}` ran only once `getPage` had resolved, so a
+    // `getPage` failure right here (a network blip is enough) left NO entry
+    // at all, and the next run called `createPage` again. Confirmed this
+    // test fails without the reordering: `provisional` comes back
+    // `undefined` and the second `createPage` count becomes 2.
+    const { root, doc } = fixture()
+    const lock: Lock = { version: 1, docs: {} }
+    const client = fakeClient()
+
+    let getPageAttempts = 0
+    const originalGetPage = client.getPage
+    client.getPage = async (pageId) => {
+      getPageAttempts++
+      if (getPageAttempts === 1) throw new Error('network blip right after create')
+      return originalGetPage(pageId)
+    }
+
+    await expect(run({ doc, root, client, lock })).rejects.toThrow(/network blip/)
+
+    const provisional = lock.docs['doc.md']
+    expect(provisional).toBeDefined()
+    expect(provisional?.contentHash).toBe('')
+    expect(client.calls.filter((c) => c === 'createPage')).toHaveLength(1)
+
+    const result = await run({ doc, root, client, lock })
+
+    // No duplicate page: the retry reuses the page the provisional entry
+    // already points at instead of calling createPage again.
+    expect(client.calls.filter((c) => c === 'createPage')).toHaveLength(1)
+    expect(result.blocked).toEqual([])
+    expect(lock.docs['doc.md']?.pageId).toBe(provisional!.pageId)
+  })
+
+  it('blocks rather than silently overwrites a human edit made while a create crashed', async () => {
+    // Regression for Fix round 2's second property: because the provisional
+    // remoteHash is the STUB body's send-side hash (not derived from the
+    // getPage read-back), a human edit landing in the create/read-back gap
+    // is never adopted as the trusted baseline. The next run's guard must
+    // see a mismatch against the real (edited) remote body and block.
+    const { root, doc } = fixture()
+    const lock: Lock = { version: 1, docs: {} }
+    const client = fakeClient()
+
+    let getPageAttempts = 0
+    const originalGetPage = client.getPage
+    client.getPage = async (pageId) => {
+      getPageAttempts++
+      if (getPageAttempts === 1) throw new Error('network blip right after create')
+      return originalGetPage(pageId)
+    }
+
+    await expect(run({ doc, root, client, lock })).rejects.toThrow(/network blip/)
+    const provisional = lock.docs['doc.md']
+    expect(provisional).toBeDefined()
+
+    // Simulate a human editing the brand-new (still-stub) page in Plane
+    // while contrail was down between the crash and the retry.
+    client.pages.set(provisional!.pageId, '<p>a human wrote this</p>')
+
+    const result = await run({ doc, root, client, lock })
+
+    expect(result.blocked).toEqual(['doc.md'])
+    expect(client.calls.filter((c) => c === 'updatePage')).toHaveLength(0)
+    // The human's edit must survive untouched.
+    expect(client.pages.get(provisional!.pageId)).toBe('<p>a human wrote this</p>')
+  })
+
   it('skips rather than blocks on a second publish when Plane normalizes the stored HTML', async () => {
     // Regression for FIX 2: remoteHash must be derived from what Plane
     // reports back (getPage), not from the HTML contrail sent. This fake

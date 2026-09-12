@@ -141,15 +141,21 @@ export async function publishDocs(args: {
         let pageId: string
         if (isNew) {
           pageId = (await client.createPage({ name: doc.frontmatter.title, description_html: STUB_BODY })).id
-          // Provisional entry: if a later step throws, this is recoverable.
-          // remoteHash is read back from Plane rather than hashed from the
-          // stub body we sent, because Plane may normalize it on the way in;
-          // hashing what we sent would make the next run's guard block
-          // instead of recover. Combined with an empty contentHash (so it
-          // won't skip), the next run reuses this page instead of creating
-          // another.
+          // Provisional entry, written with the SEND-side hash before any
+          // further network call: if getPage below throws, this entry still
+          // exists and the next run reuses this page instead of calling
+          // createPage again. Using the stub's own hash as the initial
+          // baseline (rather than deferring the write until after the
+          // read-back) also means a human edit landing in the gap between
+          // createPage and getPage is never mistaken for "what contrail last
+          // wrote" — the next run's guard will see the mismatch and block,
+          // not silently overwrite it.
+          lock.docs[doc.key] = { pageId, contentHash: '', remoteHash: hashContent([STUB_BODY]), assets: {} }
+          // Now refine remoteHash to what Plane actually stored, in case it
+          // normalized the stub on the way in. If this throws, the entry
+          // above is already recoverable.
           const created = await client.getPage(pageId)
-          lock.docs[doc.key] = { pageId, contentHash: '', remoteHash: hashContent([created.description_html]), assets: {} }
+          lock.docs[doc.key] = { ...lock.docs[doc.key]!, remoteHash: hashContent([created.description_html]) }
         } else {
           pageId = entry!.pageId
         }
