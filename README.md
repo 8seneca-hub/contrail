@@ -5,8 +5,8 @@ Pages for people to read, and to a static site for the documents that need to be
 rather than read — while the Markdown stays on disk, in git, as the thing coding agents
 consume.
 
-> **Status:** design complete, implementation not started.
-> See [the design document](docs/superpowers/specs/2026-09-12-contrail-design.md).
+> **Status:** M1 (the publish spine) is implemented and tested; live verification against a
+> real Plane instance has not yet been run. See [the design document](docs/superpowers/specs/2026-09-12-contrail-design.md).
 
 ## Why
 
@@ -80,10 +80,27 @@ asset id.
 Record what you find in `docs/verification.md` — it is currently an unfilled template, since
 this has not yet been run against a real instance.
 
+## Known limitations
+
+- **Archiving a document loses its Plane page for good.** Plane's verified endpoint set has
+  no unarchive call, so re-adding a document whose lock entry is archived creates a **new**
+  Plane page rather than restoring the old one. Renaming a document behaves the same way:
+  contrail sees it as one document archived and a different one created, so the old page is
+  archived, a new page is created for the new name, and any comments on the old page are
+  stranded on a page nobody will look at again.
+
 ## Status
 
-Not yet implemented. The design is settled and reviewed; see the milestones in the design
-document.
+M1, the publish spine, is implemented: the `contrail init | build | status | publish
+[--dry-run] [--force] [--only <substring>]` CLI works end to end against the fake Plane
+client — parsing documents, rendering Mermaid diagrams, emitting Plane-safe HTML, uploading
+page assets, and maintaining the lockfile that guards against overwriting human edits and
+recovers from a crash mid-publish. 178 tests pass (1 skipped — see "Live verification"
+above), and both `npm run typecheck` and `npm run build` are clean. What has **not** happened
+yet is live verification: nobody has run `tests/integration/plane-live.test.ts` against a
+real Plane instance, so whether Plane accepts and renders what contrail sends it (see "Live
+verification" above) remains unconfirmed. The static site (M2) and the decision-inbox
+workflow are not yet built; see the milestones in the design document.
 
 ## License
 

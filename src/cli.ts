@@ -6,8 +6,9 @@ import { findConfigPath, loadConfig } from './config.js'
 import { loadLock, saveLock } from './lock.js'
 import { parseDoc } from './parse.js'
 import { PlaneClient } from './plane/client.js'
-import { publishDocs, type PublishResult } from './plane/publish.js'
-import type { Config, Doc } from './types.js'
+import { publishDocs, type PublishOptions, type PublishResult } from './plane/publish.js'
+import type { PlaneApi } from './plane/client.js'
+import type { Config, Doc, Lock } from './types.js'
 
 const TEMPLATE = `export default {
   plane: {
@@ -60,6 +61,49 @@ export function blockedMessageFor(key: string): string[] {
     `BLOCKED  ${key} was edited in Plane since the last publish; nothing was written.`,
     '         Re-publish with --force only if that edit can be discarded.',
   ]
+}
+
+/**
+ * Archiving is the most destructive thing contrail does, and the multi-repo
+ * glob means a repo that is not cloned (or on a branch without its docs) can
+ * silently archive that repo's pages. Name each one instead of only a count,
+ * and say clearly when a dry run means nothing actually happened yet.
+ */
+export function archivedMessageFor(key: string, dryRun: boolean): string {
+  return dryRun ? `WOULD ARCHIVE  ${key}` : `ARCHIVED       ${key}`
+}
+
+/**
+ * The publish-and-save sequence, extracted so a crash mid-publish is exercised
+ * against the real `saveLock` path in tests, the way `exitCodeFor` and
+ * `publishArgsFor` are. `publishDocs` mutates `lock` in place, so whatever
+ * progress it made before throwing — including the provisional entry written
+ * right after `createPage` — is already in `lock` and must reach disk even
+ * when the publish itself fails. The error still propagates: a failed publish
+ * must never look like success.
+ */
+export async function publishAndSave(args: {
+  config: Config
+  docs: Doc[]
+  client: PlaneApi
+  lock: Lock
+  cacheDir: string
+  knownKeys: string[]
+  options: PublishOptions
+}): Promise<PublishResult> {
+  try {
+    return await publishDocs({
+      config: args.config,
+      docs: args.docs,
+      client: args.client,
+      lock: args.lock,
+      cacheDir: args.cacheDir,
+      knownKeys: args.knownKeys,
+      options: args.options,
+    })
+  } finally {
+    if (!args.options.dryRun) saveLock(args.config.root, args.lock)
+  }
 }
 
 function requireApiKey(): string {
@@ -119,18 +163,20 @@ export async function main(argv: string[]): Promise<number> {
       apiKey: requireApiKey(),
     })
 
-    const result = await publishDocs({
+    const options: PublishOptions = { dryRun: values['dry-run'], force: values.force }
+    const result = await publishAndSave({
       config,
       docs,
       client,
       lock,
       cacheDir: join(config.root, '.contrail', 'cache'),
       knownKeys,
-      options: { dryRun: values['dry-run'], force: values.force },
+      options,
     })
 
-    if (!values['dry-run']) saveLock(config.root, lock)
-
+    for (const key of result.archived) {
+      console.log(archivedMessageFor(key, Boolean(options.dryRun)))
+    }
     console.log(
       `created ${result.created.length}, updated ${result.updated.length}, ` +
         `skipped ${result.skipped.length}, archived ${result.archived.length}`,

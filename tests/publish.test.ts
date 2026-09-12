@@ -4,8 +4,8 @@ import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { parseDoc } from '../src/parse.js'
 import { hashContent } from '../src/lock.js'
-import { MAX_HTML_BYTES, publishDocs, type PublishOptions } from '../src/plane/publish.js'
-import { PlaneApiError, type PlaneApi } from '../src/plane/client.js'
+import { MAX_HTML_BYTES, contentHashFor, publishDocs, type PublishOptions } from '../src/plane/publish.js'
+import { PlaneApiError, type PageRecord, type PlaneApi } from '../src/plane/client.js'
 import type { Config, Doc, Lock } from '../src/types.js'
 
 const DOC = `---
@@ -106,8 +106,9 @@ describe('publishDocs', () => {
     expect(client.calls.indexOf('uploadAssetBytes')).toBeLessThan(client.calls.indexOf('updatePage'))
     expect(client.calls).toContain('confirmAttachment')
     expect(lock.docs['doc.md']?.pageId).toBe('page-1')
-    // No lock entry yet: the overwrite guard must not even ask about the page.
-    expect(client.calls).not.toContain('getPage')
+    // No lock entry yet, so the overwrite guard's own lookup must not run:
+    // the first call is the create, not a guard getPage on a nonexistent entry.
+    expect(client.calls[0]).toBe('createPage')
   })
 
   it('performs no writes on a second publish of unchanged content', async () => {
@@ -299,8 +300,9 @@ describe('publishDocs', () => {
 
     expect(result.created).toEqual(['doc.md'])
     expect(client.calls).toContain('createPage')
-    // The archived page must never be read back through the overwrite guard.
-    expect(client.calls).not.toContain('getPage')
+    // The archived page must never be read back through the overwrite guard:
+    // that guard's getPage would be the very first call if it ran at all.
+    expect(client.calls[0]).toBe('createPage')
     expect(lock.docs['doc.md']?.pageId).not.toBe('page-old')
     expect(lock.docs['doc.md']?.archived).toBeUndefined()
   })
@@ -459,11 +461,15 @@ graph TD; A-->B;
       version: 1,
       docs: { 'doc.md': { pageId: 'page-gone', contentHash: 'stale', remoteHash: 'stale-remote', assets: {} } },
     }
-    const client = fakeClient({
-      getPage: async () => {
-        throw new PlaneApiError('page not found', 404, '')
-      },
-    })
+    // Only the OLD (deleted) page 404s. The page created to replace it is a
+    // real page that must read back normally, or FIX 2's post-write getPage
+    // calls (for the real remoteHash) would wrongly blow up this recovery path.
+    const client = fakeClient()
+    const originalGetPage = client.getPage
+    client.getPage = async (pageId) => {
+      if (pageId === 'page-gone') throw new PlaneApiError('page not found', 404, '')
+      return originalGetPage(pageId)
+    }
 
     const result = await run({ doc, root, client, lock })
 
@@ -522,5 +528,63 @@ graph TD; A-->B;
     expect(client.calls.filter((c) => c === 'createPage')).toHaveLength(1)
     expect(lock.docs['doc.md']?.pageId).toBe(provisional!.pageId)
     expect(lock.docs['doc.md']?.contentHash).not.toBe('')
+  })
+
+  it('skips rather than blocks on a second publish when Plane normalizes the stored HTML', async () => {
+    // Regression for FIX 2: remoteHash must be derived from what Plane
+    // reports back (getPage), not from the HTML contrail sent. This fake
+    // simulates Plane rewriting every body it stores (e.g. attribute
+    // reordering, an added wrapper) by appending a marker whenever the body
+    // is read back, while `updatePage`/`createPage` still record the raw
+    // bytes contrail sent. Against the OLD behavior (remoteHash hashed from
+    // our own emitted HTML) this would report `blocked`, not `skipped`,
+    // because the guard's getPage call would return normalized bytes that
+    // never match a remoteHash computed from the un-normalized HTML we sent.
+    const { root, doc } = fixture()
+    const raw = new Map<string, string>()
+    let nextPageId = 1
+    const client: PlaneApi & { calls: string[] } = {
+      calls: [],
+      createPage: async (input) => {
+        client.calls.push('createPage')
+        const id = `page-${nextPageId++}`
+        raw.set(id, input.description_html)
+        return { id, parentLinkPending: false }
+      },
+      getPage: async (pageId): Promise<PageRecord> => {
+        client.calls.push('getPage')
+        return {
+          id: pageId,
+          name: 'Settlement flow',
+          description_html: `${raw.get(pageId) ?? ''}<!--plane-normalized-->`,
+          updated_at: '',
+        }
+      },
+      updatePage: async (pageId, input) => {
+        client.calls.push('updatePage')
+        raw.set(pageId, input.description_html)
+      },
+      archivePage: async () => void client.calls.push('archivePage'),
+      createAssetUpload: async () => {
+        client.calls.push('createAssetUpload')
+        return { asset_id: 'asset-1', upload_data: { url: 'https://s3.test', fields: {} } }
+      },
+      uploadAssetBytes: async () => void client.calls.push('uploadAssetBytes'),
+      confirmAttachment: async () => void client.calls.push('confirmAttachment'),
+    }
+    const lock: Lock = { version: 1, docs: {} }
+
+    await run({ doc, root, client, lock })
+    const result = await run({ doc, root, client, lock })
+
+    expect(result.blocked).toEqual([])
+    expect(result.skipped).toEqual(['doc.md'])
+  })
+
+  it('includes the resolved site URL in the content hash', () => {
+    const { doc } = fixture()
+    const withoutUrl = contentHashFor(doc, [], undefined)
+    const withUrl = contentHashFor(doc, [], 'https://site.example/doc')
+    expect(withoutUrl).not.toBe(withUrl)
   })
 })

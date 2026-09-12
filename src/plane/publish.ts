@@ -38,12 +38,19 @@ export interface PublishResult {
   archived: string[]
 }
 
-function contentHashFor(doc: Doc, assets: AssetPlan[]): string {
+/**
+ * `siteUrl` is included so that M2 wiring up `siteUrlFor` invalidates every
+ * already-published document exactly once (to add the "Interactive version"
+ * callout) instead of every document being silently skipped forever. The
+ * empty string for "no site URL" keeps today's hashes stable.
+ */
+export function contentHashFor(doc: Doc, assets: AssetPlan[], siteUrl: string | undefined): string {
   return hashContent([
     EMITTER_VERSION,
     doc.body,
     JSON.stringify(doc.frontmatter),
     ...assets.map((asset) => `${asset.id}:${asset.hash}`),
+    siteUrl ?? '',
   ])
 }
 
@@ -89,7 +96,8 @@ export async function publishDocs(args: {
     args.docs.map((doc) =>
       limit(async () => {
         const assets = await collectAssets(doc, { cacheDir, mmdc: options.mmdc })
-        const contentHash = contentHashFor(doc, assets)
+        const siteUrl = options.siteUrlFor?.(doc)
+        const contentHash = contentHashFor(doc, assets, siteUrl)
         const entry = lock.docs[doc.key]
         let isNew = !entry || entry.archived === true
 
@@ -134,10 +142,14 @@ export async function publishDocs(args: {
         if (isNew) {
           pageId = (await client.createPage({ name: doc.frontmatter.title, description_html: STUB_BODY })).id
           // Provisional entry: if a later step throws, this is recoverable.
-          // The next run's guard will see a remoteHash matching the stub body
-          // we just wrote (so it won't block) and an empty contentHash (so it
-          // won't skip), and will reuse this page instead of creating another.
-          lock.docs[doc.key] = { pageId, contentHash: '', remoteHash: hashContent([STUB_BODY]), assets: {} }
+          // remoteHash is read back from Plane rather than hashed from the
+          // stub body we sent, because Plane may normalize it on the way in;
+          // hashing what we sent would make the next run's guard block
+          // instead of recover. Combined with an empty contentHash (so it
+          // won't skip), the next run reuses this page instead of creating
+          // another.
+          const created = await client.getPage(pageId)
+          lock.docs[doc.key] = { pageId, contentHash: '', remoteHash: hashContent([created.description_html]), assets: {} }
         } else {
           pageId = entry!.pageId
         }
@@ -160,7 +172,7 @@ export async function publishDocs(args: {
         const html = emitPlane(doc, {
           assetIds,
           updated: new Date().toISOString().slice(0, 10),
-          siteUrl: options.siteUrlFor?.(doc),
+          siteUrl,
         })
 
         const size = Buffer.byteLength(html, 'utf8')
@@ -173,10 +185,16 @@ export async function publishDocs(args: {
 
         await client.updatePage(pageId, { name: doc.frontmatter.title, description_html: html })
 
+        // Read back what Plane actually stored, not what we sent: Plane
+        // rewrites HTML into its editor schema (attribute order, self-closing
+        // tags, wrappers), so hashing our own emitted `html` would make the
+        // very next publish mismatch and block on every document.
+        const remote = await client.getPage(pageId)
+
         lock.docs[doc.key] = {
           pageId,
           contentHash,
-          remoteHash: hashContent([html]),
+          remoteHash: hashContent([remote.description_html]),
           assets: Object.fromEntries(uniqueAssets.map((asset) => [asset.id, asset.hash])),
         }
         ;(isNew ? result.created : result.updated).push(doc.key)

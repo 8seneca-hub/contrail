@@ -57,8 +57,22 @@ attributes).
 
 - Callout (`data-block-type="callout-component"` div): survived / altered / stripped — details:
 - Table: survived / altered / stripped — details:
-- Image component: survived / altered / stripped — details:
+- Image component: survived / altered / stripped — details, including both the `src` AND the
+  `id` attribute (the `id` matters too: it's what `imageComponent()` in `src/emit/plane.ts`
+  sets to the asset's contrail-side id, not the Plane asset id):
 - Anything else Plane rewrote:
+
+### 5. Idempotency: does a second publish of the same document do nothing?
+
+Publish the same document twice in a row (no changes to the source between runs) and confirm
+the second run's summary line reports 0 written and 0 blocked — i.e. `created 0, updated 0,
+skipped 1, archived 0` for a single-document run, with no `BLOCKED` lines. This is the
+lockfile's core promise: an unchanged document must be a no-op, not a re-render, and Plane's
+own normalization of the stored HTML must not be mistaken for a human edit (see
+`remoteHash` in `src/plane/publish.ts`).
+
+- [ ] Confirmed: second run reported 0 written, 0 blocked
+- [ ] Did NOT confirm — describe what happened instead:
 
 ## How this was verified
 
