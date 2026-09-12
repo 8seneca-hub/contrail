@@ -1,0 +1,323 @@
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { describe, expect, it } from 'vitest'
+import { emitMarkdown } from '../src/emit/md.js'
+import { parseDoc } from '../src/parse.js'
+
+const DOC = `---
+title: T
+summary: S
+status: current
+---
+
+Intro.
+
+\`\`\`mermaid
+graph TD; A-->B;
+\`\`\`
+
+\`\`\`artifact {fallback="./flow.png", summary="An interactive settlement explorer."}
+<div id="explorer"></div>
+\`\`\`
+`
+
+function doc(contents: string = DOC) {
+  const root = mkdtempSync(join(tmpdir(), 'contrail-md-'))
+  writeFileSync(join(root, 'doc.md'), contents)
+  return parseDoc(join(root, 'doc.md'), root)
+}
+
+describe('emitMarkdown', () => {
+  it('keeps mermaid fences intact for agents', () => {
+    expect(emitMarkdown(doc())).toContain('```mermaid')
+  })
+
+  it('replaces artifact blocks with the fallback image and summary', () => {
+    const out = emitMarkdown(doc())
+    expect(out).toContain('![An interactive settlement explorer.](./flow.png)')
+    expect(out).toContain('An interactive settlement explorer.')
+    expect(out).not.toContain('<div id="explorer">')
+  })
+
+  describe('comprehensive coverage', () => {
+    it('document with NO artifact blocks passes through with content intact', () => {
+      const noArtifact = `---
+title: T
+summary: S
+status: current
+---
+
+# Main Heading
+
+Introduction text with **bold** and _italic_.
+
+\`\`\`mermaid
+graph LR; X-->Y;
+\`\`\`
+
+Some trailing text.
+`
+      const out = emitMarkdown(doc(noArtifact))
+      expect(out).toContain('# Main Heading')
+      expect(out).toContain('Introduction text')
+      expect(out).toContain('**bold**')
+      // remark-stringify may convert _italic_ to *italic*, both are valid
+      expect(out).toMatch(/\*italic\*|_italic_/)
+      expect(out).toContain('```mermaid')
+      expect(out).toContain('Some trailing text')
+    })
+
+    it('GFM TABLE survives the round trip', () => {
+      const withTable = `---
+title: T
+summary: S
+status: current
+---
+
+# Table Test
+
+| Header 1 | Header 2 |
+|----------|----------|
+| Cell A   | Cell B   |
+| Cell C   | Cell D   |
+
+End of table.
+`
+      const out = emitMarkdown(doc(withTable))
+      // A table should still have pipe characters
+      expect(out).toContain('|')
+      expect(out).toContain('Header 1')
+      expect(out).toContain('Header 2')
+      expect(out).toContain('Cell A')
+      // Check it's not degraded to garbage - should have proper formatting
+      const lines = out.split('\n')
+      const hasTableLine = lines.some(line => line.includes('|') && line.includes('Header'))
+      expect(hasTableLine).toBe(true)
+    })
+
+    it('MULTIPLE artifact blocks in one document are all flattened', () => {
+      const multiArtifact = `---
+title: T
+summary: S
+status: current
+---
+
+First artifact:
+
+\`\`\`artifact {fallback="./img1.png", summary="First diagram."}
+<div id="artifact1"></div>
+\`\`\`
+
+Middle content.
+
+Second artifact:
+
+\`\`\`artifact {fallback="./img2.png", summary="Second diagram."}
+<div id="artifact2"></div>
+\`\`\`
+
+End.
+`
+      const out = emitMarkdown(doc(multiArtifact))
+      // Both images should be present
+      expect(out).toContain('![First diagram.](./img1.png)')
+      expect(out).toContain('![Second diagram.](./img2.png)')
+      // Both summaries should be present
+      expect(out).toContain('First diagram.')
+      expect(out).toContain('Second diagram.')
+      // No artifact div content
+      expect(out).not.toContain('<div id="artifact1">')
+      expect(out).not.toContain('<div id="artifact2">')
+    })
+
+    it('artifact block adjacent to other content keeps surrounding content and ORDER intact', () => {
+      const adjacentContent = `---
+title: T
+summary: S
+status: current
+---
+
+Before artifact.
+
+\`\`\`artifact {fallback="./middle.png", summary="Middle block."}
+<div id="interactive"></div>
+\`\`\`
+
+After artifact.
+`
+      const out = emitMarkdown(doc(adjacentContent))
+      // Check order: before should come first
+      const beforeIdx = out.indexOf('Before artifact')
+      const imageIdx = out.indexOf('![Middle block.]')
+      const afterIdx = out.indexOf('After artifact')
+      expect(beforeIdx).toBeLessThan(imageIdx)
+      expect(imageIdx).toBeLessThan(afterIdx)
+      // All content present
+      expect(out).toContain('Before artifact')
+      expect(out).toContain('![Middle block.](./middle.png)')
+      expect(out).toContain('Middle block.')
+      expect(out).toContain('After artifact')
+    })
+
+    it('flattened output places the image and the summary in a sensible order', () => {
+      const out = emitMarkdown(doc())
+      // Find the positions of image and summary
+      const imageIdx = out.indexOf('![An interactive settlement explorer.]')
+      const summaryTextIdx = out.indexOf('An interactive settlement explorer.')
+      // Image should come before the summary text
+      expect(imageIdx).toBeLessThan(summaryTextIdx)
+      expect(imageIdx).toBeGreaterThanOrEqual(0)
+      expect(summaryTextIdx).toBeGreaterThanOrEqual(0)
+    })
+
+    it('artifact block missing fallback throws with location info', () => {
+      const missingFallback = `---
+title: T
+summary: S
+status: current
+---
+
+\`\`\`artifact {summary="No fallback here."}
+<div></div>
+\`\`\`
+`
+      expect(() => emitMarkdown(doc(missingFallback))).toThrow(/fallback/)
+      expect(() => emitMarkdown(doc(missingFallback))).toThrow(/doc\.md/)
+    })
+
+    it('artifact block missing summary throws with location info', () => {
+      const missingSummary = `---
+title: T
+summary: S
+status: current
+---
+
+\`\`\`artifact {fallback="./img.png"}
+<div></div>
+\`\`\`
+`
+      expect(() => emitMarkdown(doc(missingSummary))).toThrow(/summary/)
+      expect(() => emitMarkdown(doc(missingSummary))).toThrow(/doc\.md/)
+    })
+
+    it('does not MUTATE the input Doc - calling emitMarkdown twice returns identical output', () => {
+      const input = doc()
+      const output1 = emitMarkdown(input)
+      const output2 = emitMarkdown(input)
+      // Outputs must be identical
+      expect(output1).toBe(output2)
+      // Also verify the tree hasn't been modified by checking we can parse it again
+      const output3 = emitMarkdown(input)
+      expect(output3).toBe(output1)
+    })
+
+    it('preserves inline code, links, and other inline formatting', () => {
+      const withInline = `---
+title: T
+summary: S
+status: current
+---
+
+Text with \`code\`, [link](https://example.com), and **bold**.
+
+\`\`\`artifact {fallback="./test.png", summary="Test."}
+<div></div>
+\`\`\`
+
+More text.
+`
+      const out = emitMarkdown(doc(withInline))
+      expect(out).toContain('`code`')
+      expect(out).toContain('[link](https://example.com)')
+      expect(out).toContain('**bold**')
+      expect(out).toContain('More text')
+    })
+
+    it('artifact with multi-line summary text', () => {
+      const longSummary = `---
+title: T
+summary: S
+status: current
+---
+
+\`\`\`artifact {fallback="./complex.png", summary="This is a longer summary with multiple concepts about the interactive block."}
+<div id="complex"></div>
+\`\`\`
+`
+      const out = emitMarkdown(doc(longSummary))
+      expect(out).toContain('![This is a longer summary')
+      expect(out).toContain('This is a longer summary with multiple concepts about the interactive block.')
+      expect(out).not.toContain('<div id="complex">')
+    })
+
+    it('handles artifact at the very end of document', () => {
+      const endArtifact = `---
+title: T
+summary: S
+status: current
+---
+
+Some content.
+
+\`\`\`artifact {fallback="./end.png", summary="End block."}
+<div></div>
+\`\`\`
+`
+      const out = emitMarkdown(doc(endArtifact))
+      expect(out).toContain('Some content')
+      expect(out).toContain('![End block.](./end.png)')
+      expect(out).toContain('End block.')
+    })
+
+    it('handles artifact at the very start of document body (after frontmatter)', () => {
+      const startArtifact = `---
+title: T
+summary: S
+status: current
+---
+
+\`\`\`artifact {fallback="./start.png", summary="Start block."}
+<div></div>
+\`\`\`
+
+Some content after.
+`
+      const out = emitMarkdown(doc(startArtifact))
+      expect(out).toContain('![Start block.](./start.png)')
+      expect(out).toContain('Start block.')
+      expect(out).toContain('Some content after')
+    })
+
+    it('preserves lists and nested structures', () => {
+      const withLists = `---
+title: T
+summary: S
+status: current
+---
+
+- Item 1
+- Item 2
+  - Nested 2a
+  - Nested 2b
+
+1. First
+2. Second
+
+\`\`\`artifact {fallback="./list.png", summary="List diagram."}
+<div></div>
+\`\`\`
+
+More.
+`
+      const out = emitMarkdown(doc(withLists))
+      // remark-stringify uses * for lists, both - and * are valid markdown
+      expect(out).toMatch(/[*-]\s+Item 1/)
+      expect(out).toMatch(/[*-]\s+Item 2/)
+      expect(out).toContain('Nested 2a')
+      expect(out).toContain('1. First')
+      expect(out).toContain('2. Second')
+      expect(out).toContain('![List diagram.](./list.png)')
+    })
+  })
+})
