@@ -1,16 +1,37 @@
 import type { Root } from 'mdast'
+import type { DocKind, Section } from './doc-kinds.js'
 
 export type DocStatus = 'draft' | 'review' | 'current' | 'stale'
 
-/** Diátaxis document kind. Optional: retrofitting it across an existing docs
- * tree must not break a build. Absent means `mixed-mode` does not fire. */
-export type DocKind = 'tutorial' | 'how-to' | 'reference' | 'explanation'
+/** Diátaxis document shape — how the writing is structured. Optional:
+ * retrofitting it across an existing docs tree must not break a build.
+ * Absent means `mixed-mode` does not fire. Kept separate from `docKind`
+ * (below), which answers a different question: what role the document
+ * plays in the project. A PRD is `docKind: 'prd'`, `kind: 'reference'`. */
+export type DiataxisKind = 'tutorial' | 'how-to' | 'reference' | 'explanation'
+
+export type Audience = 'internal' | 'client'
 
 export interface Frontmatter {
   title: string
   summary: string
   status: DocStatus
-  kind?: DocKind
+  kind?: DiataxisKind
+  /**
+   * The client-visibility gate. This is a SAFETY property, not a
+   * convenience: it defaults to `'internal'` when absent, because a
+   * document nobody has classified must never be publishable to a client.
+   * Only an explicit `audience: client` opts a document in. `parseDoc`
+   * always populates this — it is never left `undefined` on a parsed Doc.
+   */
+  audience: Audience
+  section?: Section
+  docKind?: DocKind
+  owner?: string
+  /** ISO date; feeds a staleness rule later. */
+  reviewedOn?: string
+  /** Provenance — which client artefact this document's content came from. */
+  sources?: string[]
   repos?: string[]
   tags?: string[]
   decisions?: number[]

@@ -4,9 +4,11 @@ import matter from 'gray-matter'
 import remarkGfm from 'remark-gfm'
 import remarkParse from 'remark-parse'
 import { unified } from 'unified'
+import { DOC_KINDS, SECTIONS } from './doc-kinds.js'
 import type { Doc, DocStatus, Frontmatter } from './types.js'
 
 const STATUSES: readonly DocStatus[] = ['draft', 'review', 'current', 'stale']
+const AUDIENCES = ['internal', 'client'] as const
 
 export class DocError extends Error {}
 
@@ -26,6 +28,21 @@ export function parseDoc(absPath: string, root: string): Doc {
   }
   if (!fm.status || !STATUSES.includes(fm.status)) {
     throw new DocError(`${key}: frontmatter \`status\` must be one of ${STATUSES.join(', ')}.`)
+  }
+
+  if (fm.audience !== undefined && !AUDIENCES.includes(fm.audience)) {
+    throw new DocError(`${key}: frontmatter \`audience\` must be one of ${AUDIENCES.join(', ')}.`)
+  }
+  // SAFETY: a document nobody classified must never be publishable to a
+  // client. Absent `audience` defaults to the safe value, not a guess.
+  fm.audience = fm.audience ?? 'internal'
+
+  if (fm.section !== undefined && !SECTIONS.includes(fm.section)) {
+    throw new DocError(`${key}: frontmatter \`section\` must be one of ${SECTIONS.join(', ')}.`)
+  }
+
+  if (fm.docKind !== undefined && !DOC_KINDS.includes(fm.docKind)) {
+    throw new DocError(`${key}: frontmatter \`docKind\` must be one of ${DOC_KINDS.join(', ')}.`)
   }
 
   const tree = unified().use(remarkParse).use(remarkGfm).parse(content)

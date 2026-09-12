@@ -10,23 +10,23 @@ import { parseDoc } from './parse.js'
 import { PlaneClient } from './plane/client.js'
 import { publishDocs, type PublishOptions, type PublishResult } from './plane/publish.js'
 import type { PlaneApi } from './plane/client.js'
+import { CONFIG_TEMPLATE, runInitTemplate, scaffoldDoc, type ScaffoldResult } from './scaffold.js'
 import type { Config, Doc, Lock } from './types.js'
-
-const TEMPLATE = `export default {
-  plane: {
-    baseUrl: 'https://plane.example.com',
-    workspace: 'your-workspace-slug',
-  },
-  repos: {},
-  docs: ['./docs/**/*.md', './*/docs/**/*.md'],
-}
-`
 
 export function runInit(cwd: string): string {
   const path = join(cwd, 'contrail.config.ts')
   if (existsSync(path)) throw new Error(`${path} already exists.`)
-  writeFileSync(path, TEMPLATE)
+  writeFileSync(path, CONFIG_TEMPLATE)
   return path
+}
+
+/** Report lines for a scaffold/init run: what was created, then what was
+ * skipped because it already existed — never silently dropped. */
+export function scaffoldReportLines(result: ScaffoldResult): string[] {
+  const lines = result.created.map((key) => `CREATED  ${key}`)
+  lines.push(...result.skipped.map((key) => `SKIPPED  ${key} (already exists)`))
+  lines.push(`${result.created.length} created, ${result.skipped.length} skipped.`)
+  return lines
 }
 
 export function findDocs(config: Config): string[] {
@@ -138,6 +138,10 @@ export async function main(argv: string[]): Promise<number> {
       out: { type: 'string' },
       strict: { type: 'boolean', default: false },
       index: { type: 'boolean', default: false },
+      template: { type: 'string' },
+      client: { type: 'string' },
+      project: { type: 'string' },
+      'start-date': { type: 'string' },
     },
   })
 
@@ -145,15 +149,45 @@ export async function main(argv: string[]): Promise<number> {
 
   if (command === 'help') {
     console.log(
-      'contrail init | build | status | publish [--dry-run] [--force] [--only <substring>] | ' +
-        'site [--out <dir>] | check [--strict] [--index]',
+      'contrail init [--template agency-project] | build | status | ' +
+        'publish [--dry-run] [--force] [--only <substring>] | ' +
+        'site [--out <dir>] | check [--strict] [--index] | scaffold <docKind> <path>',
     )
     return 0
   }
 
   if (command === 'init') {
-    console.log(`Created ${runInit(process.cwd())}`)
+    if (values.template === undefined) {
+      console.log(`Created ${runInit(process.cwd())}`)
+      return 0
+    }
+    if (values.template !== 'agency-project') {
+      console.error(`Unknown template '${values.template}'. Only 'agency-project' is supported.`)
+      return 2
+    }
+    const result = runInitTemplate(process.cwd(), {
+      client: values.client,
+      project: values.project,
+      startDate: values['start-date'],
+    })
+    for (const line of scaffoldReportLines(result)) console.log(line)
     return 0
+  }
+
+  if (command === 'scaffold') {
+    const [, docKind, path] = positionals
+    if (!docKind || !path) {
+      console.error('Usage: contrail scaffold <docKind> <path>')
+      return 2
+    }
+    try {
+      const written = scaffoldDoc(docKind, resolve(process.cwd(), path))
+      console.log(`Created ${written}`)
+      return 0
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error))
+      return 1
+    }
   }
 
   const config = loadConfig(findConfigPath(process.cwd()))
