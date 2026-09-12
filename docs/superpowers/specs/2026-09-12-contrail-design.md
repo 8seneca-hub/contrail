@@ -150,7 +150,7 @@ for each changed asset:
     POST /workspaces/{ws}/assets/                # entity_type: PAGE_DESCRIPTION
     PUT bytes → upload_data.url
     POST confirm
-PATCH page { name, description_html: emitPlane(doc, assetIds) }
+PUT   page { name, description_html: emitPlane(doc, assetIds) }   # PUT replaces the whole body
 ```
 
 Collection placement happens on create only, so manual reorganization in Plane survives
@@ -159,6 +159,9 @@ republishing.
 ### Guards
 
 - Payload size checked against the 10 MB ceiling before write.
+- Page hierarchy uses Plane's native `parent_id` / `collection_id` on create (they are mutually
+  exclusive), not embedded sub-page components. Creating a child may return `202`, meaning the
+  page exists while its parent link is still being made; that is success, not failure.
 - Concurrency capped at 4 in-flight requests; self-hosted instances are not a CDN.
 - `PLANE_API_KEY` read from the environment only, never from config.
 - **Refuse to overwrite a page edited by a human in Plane** — detected by comparing the
