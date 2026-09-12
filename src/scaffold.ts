@@ -401,7 +401,7 @@ function renderIndexStub(stub: IndexStub): string {
   return lines.join('\n')
 }
 
-const DOC_FILES: ReadonlyArray<{ path: string; docKind: DocKind }> = [
+export const DOC_FILES: ReadonlyArray<{ path: string; docKind: DocKind }> = [
   { path: '01-overview/charter.md', docKind: 'charter' },
   { path: '01-overview/business-case.md', docKind: 'business-case' },
   { path: '01-overview/stakeholders.md', docKind: 'stakeholders' },
@@ -426,6 +426,15 @@ const DOC_FILES: ReadonlyArray<{ path: string; docKind: DocKind }> = [
   { path: '05-delivery/acceptance.md', docKind: 'acceptance' },
   { path: '05-delivery/closure.md', docKind: 'closure' },
 ]
+
+/**
+ * The docKinds `init --template` scaffolds as a single file per project —
+ * as opposed to `meeting`, `adr`, `change-request`, `qa-report` and `release`,
+ * which live one-per-instance inside an `INDEX_STUBS` folder instead.
+ * `missing-core-doc` (check.ts) uses this to know which docKind each section
+ * is expected to have exactly one of.
+ */
+export const CORE_DOC_KINDS: readonly DocKind[] = DOC_FILES.map((f) => f.docKind)
 
 function renderProjectYml(meta: { client: string; project: string; startDate: string }): string {
   // 00-meta/project.yml: client, project name, start date. Nothing else —

@@ -507,6 +507,139 @@ describe('check command (via main)', () => {
     expect(llmsTxt).toContain('## Reference')
     expect(llmsTxt).toContain('[A]')
   })
+
+  it('--json emits a machine-readable findings array instead of formatted lines', async () => {
+    const root = setupWorkspace()
+    writeFileSync(
+      join(root, 'docs', 'stale.md'),
+      '---\ntitle: Stale\nsummary: A stale doc.\nstatus: stale\n---\n\nBody.\n',
+    )
+
+    const logs: string[] = []
+    const spy = vi.spyOn(console, 'log').mockImplementation((msg: string) => logs.push(msg))
+    const cwd = process.cwd()
+    process.chdir(root)
+    let code: number
+    try {
+      code = await main(['check', '--json'])
+    } finally {
+      process.chdir(cwd)
+      spy.mockRestore()
+    }
+
+    expect(code).toBe(0)
+    expect(logs).toHaveLength(1)
+    const parsed = JSON.parse(logs[0]!)
+    expect(parsed.errors).toBe(0)
+    expect(parsed.warnings).toBeGreaterThan(0)
+    expect(parsed.findings.some((f: { rule: string }) => f.rule === 'stale-doc')).toBe(true)
+    expect(parsed.indexPath).toBeNull()
+  })
+})
+
+describe('status command (via main)', () => {
+  function setupWorkspace() {
+    const root = mkdtempSync(join(tmpdir(), 'contrail-status-cli-'))
+    mkdirSync(join(root, 'docs'), { recursive: true })
+    writeFileSync(
+      join(root, 'contrail.config.ts'),
+      "export default { plane: { baseUrl: 'https://plane.test', workspace: 'acme' }, repos: {}, " +
+        "docs: ['./docs/**/*.md'] }\n",
+    )
+    return root
+  }
+
+  it('reports pageId, status, and health flags per document in human form', async () => {
+    const root = setupWorkspace()
+    writeFileSync(
+      join(root, 'docs', 'a.md'),
+      '---\ntitle: A\nsummary: Doc A.\nstatus: current\n---\n\nBody.\n',
+    )
+
+    const logs: string[] = []
+    const spy = vi.spyOn(console, 'log').mockImplementation((msg: string) => logs.push(msg))
+    const cwd = process.cwd()
+    process.chdir(root)
+    try {
+      expect(await main(['status'])).toBe(0)
+    } finally {
+      process.chdir(cwd)
+      spy.mockRestore()
+    }
+
+    const output = logs.join('\n')
+    expect(output).toContain('unpublished')
+    expect(output).toContain('docs/a.md')
+    expect(output).toContain('no-owner')
+    expect(output).toContain('Documentation health:')
+  })
+
+  it('--json emits the same documentation view as structured data', async () => {
+    const root = setupWorkspace()
+    writeFileSync(
+      join(root, 'docs', 'a.md'),
+      '---\ntitle: A\nsummary: Doc A.\nstatus: current\n---\n\nBody.\n',
+    )
+
+    const logs: string[] = []
+    const spy = vi.spyOn(console, 'log').mockImplementation((msg: string) => logs.push(msg))
+    const cwd = process.cwd()
+    process.chdir(root)
+    try {
+      expect(await main(['status', '--json'])).toBe(0)
+    } finally {
+      process.chdir(cwd)
+      spy.mockRestore()
+    }
+
+    expect(logs).toHaveLength(1)
+    const parsed = JSON.parse(logs[0]!)
+    expect(parsed.docs).toHaveLength(1)
+    expect(parsed.docs[0].key).toBe('docs/a.md')
+    expect(parsed.docs[0].noOwner).toBe(true)
+    expect(parsed.summary.noOwner).toBe(1)
+  })
+})
+
+describe('scaffold command --json (via main)', () => {
+  it('emits {"created": <path>} on success', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'contrail-scaffold-json-'))
+    const logs: string[] = []
+    const spy = vi.spyOn(console, 'log').mockImplementation((msg: string) => logs.push(msg))
+    const cwd = process.cwd()
+    process.chdir(root)
+    let code: number
+    try {
+      code = await main(['scaffold', 'adr', 'docs/decisions/001-use-postgres.md', '--json'])
+    } finally {
+      process.chdir(cwd)
+      spy.mockRestore()
+    }
+
+    expect(code).toBe(0)
+    const parsed = JSON.parse(logs[0]!)
+    expect(parsed.created).toMatch(/docs\/decisions\/001-use-postgres\.md$/)
+    expect(existsSync(parsed.created)).toBe(true)
+  })
+
+  it('emits {"error": <message>} and a non-zero exit on a bad docKind', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'contrail-scaffold-json-'))
+    const logs: string[] = []
+    const spy = vi.spyOn(console, 'log').mockImplementation((msg: string) => logs.push(msg))
+    const cwd = process.cwd()
+    process.chdir(root)
+    let code: number
+    try {
+      code = await main(['scaffold', 'not-a-kind', 'docs/x.md', '--json'])
+    } finally {
+      process.chdir(cwd)
+      spy.mockRestore()
+    }
+
+    expect(code).toBe(1)
+    const parsed = JSON.parse(logs[0]!)
+    expect(parsed.error).toMatch(/not-a-kind/)
+  })
 })
 
 describe('sheet command (via main)', () => {

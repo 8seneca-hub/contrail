@@ -281,6 +281,8 @@ title: How contrail turns one Markdown file into three readable things
 summary: The compile path from a single Markdown source to an interactive site for people, typed IR for agents, and a Plane page when the tier allows it.
 status: current
 kind: explanation
+owner: docs-team
+reviewedOn: 2026-09-01
 ---
 
 A documentation tool has two audiences that want opposite things.

@@ -47,4 +47,19 @@ describe('parseDoc', () => {
     const { root, path } = docFile('---\ntitle: t\nsummary: s\nstatus: published\n---\nbody\n')
     expect(() => parseDoc(path, root)).toThrow(/status/)
   })
+
+  it('normalizes an unquoted YAML `reviewedOn` date back to a plain ISO string', () => {
+    // js-yaml auto-parses an unquoted date like `2026-09-01` into a real Date
+    // object, not the string the Frontmatter schema promises. `unreviewed`
+    // (check.ts) depends on this being a string it can display and re-parse.
+    const { root, path } = docFile('---\ntitle: t\nsummary: s\nstatus: current\nreviewedOn: 2026-09-01\n---\nbody\n')
+    const doc = parseDoc(path, root)
+    expect(doc.frontmatter.reviewedOn).toBe('2026-09-01')
+    expect(typeof doc.frontmatter.reviewedOn).toBe('string')
+  })
+
+  it('leaves an explicitly-quoted `reviewedOn` string untouched', () => {
+    const { root, path } = docFile('---\ntitle: t\nsummary: s\nstatus: current\nreviewedOn: "2026-09-01"\n---\nbody\n')
+    expect(parseDoc(path, root).frontmatter.reviewedOn).toBe('2026-09-01')
+  })
 })

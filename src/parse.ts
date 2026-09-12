@@ -46,6 +46,15 @@ export function parseDoc(absPath: string, root: string): Doc {
     throw new DocError(`${key}: frontmatter \`docKind\` must be one of ${DOC_KINDS.join(', ')}.`)
   }
 
+  // js-yaml (via gray-matter) auto-parses an unquoted YAML date
+  // (`reviewedOn: 2026-09-01`) into a real Date object, not the ISO string
+  // the schema promises. Normalize here, once, so every consumer of
+  // `reviewedOn` can trust it is actually a string.
+  const rawReviewedOn = fm.reviewedOn as unknown
+  if (rawReviewedOn instanceof Date) {
+    fm.reviewedOn = rawReviewedOn.toISOString().slice(0, 10)
+  }
+
   const tree = unified().use(remarkParse).use(remarkGfm).parse(content)
   return { absPath, key, frontmatter: fm as Frontmatter, tree, body: content, audienceExplicit }
 }

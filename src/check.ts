@@ -3,6 +3,8 @@ import { dirname, join, relative, resolve, sep } from 'node:path'
 import { visit } from 'unist-util-visit'
 import type { Heading, List, Root, RootContent, Text } from 'mdast'
 import { parseAttrs } from './blocks/attrs.js'
+import { DOC_KIND_SECTION, SECTIONS, type DocKind, type Section } from './doc-kinds.js'
+import { CORE_DOC_KINDS } from './scaffold.js'
 import type { Config, Doc } from './types.js'
 
 export interface Finding {
@@ -313,23 +315,219 @@ function checkUnclassifiedMoneyDoc(doc: Doc, findings: Finding[]): void {
   })
 }
 
+/**
+ * Whether a document is still shaped like a freshly scaffolded stub: the
+ * placeholder body `renderDocFile`/`renderIndexStub` (scaffold.ts) write —
+ * a heading or two and a bullet list of guiding questions/notes, no prose.
+ * Read directly off that shape (a bullet list, no paragraph anywhere) rather
+ * than a word-count guess, so it stops matching the instant a document gets
+ * its first real paragraph. Deliberately keyed on an UNORDERED list only —
+ * an ordered list of real numbered steps (which `steps-without-diagram`
+ * exists to catch) must never be mistaken for a stub.
+ */
+export function isStub(doc: Doc): boolean {
+  const hasParagraph = doc.tree.children.some((n) => n.type === 'paragraph')
+  const hasBulletList = doc.tree.children.some((n) => n.type === 'list' && !(n as List).ordered)
+  return hasBulletList && !hasParagraph
+}
+
+/**
+ * The section a document's path places it under — read from the path itself
+ * (any segment matching a known section name), never from frontmatter. This
+ * is what `orphan-doc` and `missing-core-doc` mean by "a section exists":
+ * documents actually sitting in that folder, not a metadata claim a document
+ * could make about itself from anywhere.
+ */
+const SECTION_SEGMENT = new RegExp(`(?:^|/)(${SECTIONS.join('|')})(?:/|$)`)
+
+export function pathSection(key: string): Section | undefined {
+  const match = key.match(SECTION_SEGMENT)
+  return match ? (match[1] as Section) : undefined
+}
+
+/**
+ * A stub is not a problem by itself — a fresh `init --template` is nothing
+ * BUT stubs, and that must lint clean. It becomes worth a warning only once
+ * someone has promoted it past `draft` (review/current/stale) while the body
+ * is still just the placeholder — a claim of progress the content doesn't
+ * back up. This is also the ONE report a stub gets: the six content rules
+ * above all skip a stub outright (see `checkDocs`), so a stub is never
+ * double-reported.
+ */
+function checkEmptyStub(doc: Doc, findings: Finding[]): void {
+  if (!isStub(doc)) return
+  if (doc.frontmatter.status === 'draft') return
+  findings.push({
+    doc: doc.key,
+    rule: 'empty-stub',
+    severity: 'warn',
+    message:
+      `This document is marked \`status: ${doc.frontmatter.status}\` but still has only its scaffolded ` +
+      'placeholder content (guiding questions/notes, no prose) — fill it in, or move it back to `status: draft`.',
+  })
+}
+
+/** A document living inside a folder that names none of the six sections is
+ * outside the taxonomy the rest of the tool assumes. A document with no
+ * folder at all (a bare filename) has no placement to judge, so it is left
+ * alone — this rule is about a document that IS nested, just nested wrong. */
+function checkOrphanDoc(doc: Doc, findings: Finding[]): void {
+  if (!doc.key.includes('/')) return
+  if (pathSection(doc.key) !== undefined) return
+  findings.push({
+    doc: doc.key,
+    rule: 'orphan-doc',
+    severity: 'warn',
+    message: `This document sits outside the section folders (${SECTIONS.join(', ')}) — move it under one of them.`,
+  })
+}
+
+/**
+ * "A section exists" means documents are actually filed there — read from
+ * the path, same as `orphan-doc`. Reported against the section name itself
+ * (there is no single offending document; the finding is an absence), one
+ * per missing core docKind, so a project missing several core docs gets
+ * several specific, actionable lines rather than one vague one.
+ */
+function checkMissingCoreDoc(docs: Doc[], findings: Finding[]): void {
+  const sectionsPresent = new Set<Section>()
+  const kindsBySection = new Map<Section, Set<DocKind>>()
+
+  for (const doc of docs) {
+    const section = pathSection(doc.key)
+    if (!section) continue
+    sectionsPresent.add(section)
+    const kind = doc.frontmatter.docKind
+    if (!kind) continue
+    const set = kindsBySection.get(section) ?? new Set<DocKind>()
+    set.add(kind)
+    kindsBySection.set(section, set)
+  }
+
+  for (const section of sectionsPresent) {
+    const have = kindsBySection.get(section) ?? new Set<DocKind>()
+    for (const kind of CORE_DOC_KINDS) {
+      if (DOC_KIND_SECTION[kind] !== section) continue
+      if (have.has(kind)) continue
+      findings.push({
+        doc: section,
+        rule: 'missing-core-doc',
+        severity: 'warn',
+        message: `Section '${section}' has documents but no '${kind}' — scaffold one: \`contrail scaffold ${kind} docs/${section}/<name>.md\`.`,
+      })
+    }
+  }
+}
+
+/**
+ * Ownership is not expected of an untouched draft — nobody has claimed it
+ * yet, and that is fine. It starts to matter once a document moves past
+ * `draft`: something is now review-worthy or in force, and it needs a name
+ * attached to keeping it accurate.
+ */
+function checkNoOwner(doc: Doc, findings: Finding[]): void {
+  if (doc.frontmatter.status === 'draft') return
+  if (doc.frontmatter.owner) return
+  findings.push({
+    doc: doc.key,
+    rule: 'no-owner',
+    severity: 'warn',
+    message: 'This document has no `owner` — add one so there is a name attached to keeping it accurate.',
+  })
+}
+
+const REVIEW_WINDOW_DAYS = 90
+const MS_PER_DAY = 24 * 60 * 60 * 1000
+
+/**
+ * Two ways to be unreviewed: a `current` document that has never been
+ * reviewed at all (no `reviewedOn`), or one whose last review has aged out
+ * of the 90-day window regardless of status. A malformed `reviewedOn` is not
+ * this rule's problem — it stays silent rather than guess.
+ */
+function checkUnreviewed(doc: Doc, findings: Finding[]): void {
+  const { reviewedOn, status } = doc.frontmatter
+  if (!reviewedOn) {
+    if (status !== 'current') return
+    findings.push({
+      doc: doc.key,
+      rule: 'unreviewed',
+      severity: 'warn',
+      message: 'This `status: current` document has no `reviewedOn` date — add one once it has actually been reviewed.',
+    })
+    return
+  }
+
+  const reviewedAt = new Date(reviewedOn)
+  if (Number.isNaN(reviewedAt.getTime())) return
+  const ageDays = Math.floor((Date.now() - reviewedAt.getTime()) / MS_PER_DAY)
+  if (ageDays <= REVIEW_WINDOW_DAYS) return
+
+  findings.push({
+    doc: doc.key,
+    rule: 'unreviewed',
+    severity: 'warn',
+    message:
+      `This document was last reviewed ${ageDays} days ago (${reviewedOn}), more than the ` +
+      `${REVIEW_WINDOW_DAYS}-day window — review it again and update \`reviewedOn\`.`,
+  })
+}
+
 export function checkDocs(docs: Doc[], _opts: { strict?: boolean } = {}): Finding[] {
   const findings: Finding[] = []
 
   for (const doc of docs) {
     const children = doc.tree.children
-    checkFlowWithoutDiagram(doc, children, findings)
-    checkStepsWithoutDiagram(doc, children, findings)
-    checkUndiagrammedDoc(doc, findings)
+    // A stub reads as "empty" to every content rule below purely because of
+    // its heading text or short body — that is a lint flaw, not a real
+    // finding. `empty-stub` is the one report a stub can earn; see it above.
+    if (!isStub(doc)) {
+      checkFlowWithoutDiagram(doc, children, findings)
+      checkStepsWithoutDiagram(doc, children, findings)
+      checkUndiagrammedDoc(doc, findings)
+      checkMixedMode(doc, findings)
+      checkProseHygiene(doc, findings)
+    }
     checkMissingSummary(doc, findings)
     checkStaleDoc(doc, findings)
-    checkMixedMode(doc, findings)
-    checkProseHygiene(doc, findings)
     checkInternalDocExposed(doc, findings)
     checkUnclassifiedMoneyDoc(doc, findings)
+    checkEmptyStub(doc, findings)
+    checkOrphanDoc(doc, findings)
+    checkNoOwner(doc, findings)
+    checkUnreviewed(doc, findings)
   }
+  checkMissingCoreDoc(docs, findings)
 
   return findings
+}
+
+export interface DocStatusReport {
+  /** Every document currently shaped like a stub, regardless of `status`. */
+  stubs: string[]
+  /** Every document with no `owner`, regardless of `status`. */
+  noOwner: string[]
+  /** Document keys `unreviewed` fired on. */
+  overdue: string[]
+  /** `missing-core-doc` findings, one per absent core docKind. */
+  missingCoreDocs: Finding[]
+}
+
+/**
+ * `contrail status`'s documentation view: what state the documentation
+ * itself is in — never a read on the project it describes. `noOwner` and
+ * `stubs` report the raw fact for every document regardless of `status`
+ * (status view is not gated the way the lint warning is); `overdue` reuses
+ * `unreviewed`'s own date logic via `checkDocs` rather than a second copy of it.
+ */
+export function docStatusReport(docs: Doc[]): DocStatusReport {
+  const findings = checkDocs(docs)
+  return {
+    stubs: docs.filter((doc) => isStub(doc)).map((doc) => doc.key),
+    noOwner: docs.filter((doc) => !doc.frontmatter.owner).map((doc) => doc.key),
+    overdue: findings.filter((f) => f.rule === 'unreviewed').map((f) => f.doc),
+    missingCoreDocs: findings.filter((f) => f.rule === 'missing-core-doc'),
+  }
 }
 
 /**
@@ -361,8 +559,20 @@ export function llmsTxtPath(config: Config): string {
  * `kind`. Replaces the bespoke INDEX.md M1 proposed — a convention agents
  * already understand beats a private format.
  */
-export function buildLlmsTxt(config: Config, docs: Doc[]): string {
+export interface BuildLlmsTxtOptions {
+  /**
+   * Resolves a document to the link path used in its `llms.txt` entry.
+   * Defaults to a path relative to `docs/llms.txt` — right for the
+   * agent-facing tree written by `writeLlmsTxt`. `contrail site` passes one
+   * that points at the emitted page instead, so the copy it writes into the
+   * site output links to files that actually exist there.
+   */
+  linkFor?: (doc: Doc) => string
+}
+
+export function buildLlmsTxt(config: Config, docs: Doc[], opts: BuildLlmsTxtOptions = {}): string {
   const indexDir = dirname(llmsTxtPath(config))
+  const linkFor = opts.linkFor ?? ((doc: Doc) => relative(indexDir, resolve(config.root, doc.key)).split(sep).join('/'))
   const lines: string[] = [`# ${config.plane.workspace}`, '', `> Index of every contrail-managed document.`, '']
 
   const grouped = new Map<string, Doc[]>()
@@ -379,9 +589,8 @@ export function buildLlmsTxt(config: Config, docs: Doc[]): string {
   }
 
   const entry = (doc: Doc): string => {
-    const linkPath = relative(indexDir, resolve(config.root, doc.key)).split(sep).join('/')
     const stale = doc.frontmatter.status === 'stale' ? ' (stale)' : ''
-    return `- [${doc.frontmatter.title}](${linkPath}): ${doc.frontmatter.summary}${stale}`
+    return `- [${doc.frontmatter.title}](${linkFor(doc)}): ${doc.frontmatter.summary}${stale}`
   }
 
   for (const { kind, label } of KIND_ORDER) {

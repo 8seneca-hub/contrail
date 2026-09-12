@@ -2,9 +2,9 @@ import { existsSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import { globSync } from 'tinyglobby'
-import { checkDocs, checkExitCode, writeLlmsTxt } from './check.js'
+import { buildLlmsTxt, checkDocs, checkExitCode, docStatusReport, writeLlmsTxt } from './check.js'
 import { findConfigPath, loadConfig } from './config.js'
-import { buildSite, docsForAudience } from './emit/site.js'
+import { buildSite, docsForAudience, pageFileFor } from './emit/site.js'
 import { loadLock, saveLock } from './lock.js'
 import { parseDoc } from './parse.js'
 import { PlaneClient } from './plane/client.js'
@@ -138,6 +138,19 @@ export function siteOutDirFor(config: Config, out: string | undefined): string {
 }
 
 /**
+ * Where `site` writes its own filtered `llms.txt` — INSIDE the site output,
+ * next to the pages it describes. This is Ruling 2: `site --audience client`
+ * and a separate `check --index --audience client` are two commands whose
+ * flags must agree, and a mismatched pair leaks an index of internal
+ * documents. One command producing both halves of the artifact removes that
+ * failure mode entirely. Standalone `check --index` is unaffected — it still
+ * writes `docs/llms.txt` for the agent-facing tree.
+ */
+export function siteLlmsTxtPath(outDir: string): string {
+  return join(outDir, 'llms.txt')
+}
+
+/**
  * The only valid `--audience` values: `'client'`, or omitted (which means
  * "everything"). Anything else — including `'internal'`, which sounds
  * plausible but is not a build mode — is a usage error, not a silent
@@ -185,6 +198,7 @@ export async function main(argv: string[]): Promise<number> {
       audience: { type: 'string' },
       strict: { type: 'boolean', default: false },
       index: { type: 'boolean', default: false },
+      json: { type: 'boolean', default: false },
       template: { type: 'string' },
       client: { type: 'string' },
       project: { type: 'string' },
@@ -196,10 +210,10 @@ export async function main(argv: string[]): Promise<number> {
 
   if (command === 'help') {
     console.log(
-      'contrail init [--template agency-project] | build | status | ' +
+      'contrail init [--template agency-project] | build | status [--json] | ' +
         'publish [--dry-run] [--force] [--only <substring>] | ' +
-        'site [--out <dir>] [--audience client] | check [--strict] [--index] [--audience client] | ' +
-        'scaffold <docKind> <path> | sheet pull <doc> | sheet push <doc> [--force]',
+        'site [--out <dir>] [--audience client] | check [--strict] [--index] [--audience client] [--json] | ' +
+        'scaffold <docKind> <path> [--json] | sheet pull <doc> | sheet push <doc> [--force]',
     )
     return 0
   }
@@ -225,15 +239,20 @@ export async function main(argv: string[]): Promise<number> {
   if (command === 'scaffold') {
     const [, docKind, path] = positionals
     if (!docKind || !path) {
-      console.error('Usage: contrail scaffold <docKind> <path>')
+      const message = 'Usage: contrail scaffold <docKind> <path>'
+      if (values.json) console.log(JSON.stringify({ error: message }))
+      else console.error(message)
       return 2
     }
     try {
       const written = scaffoldDoc(docKind, resolve(process.cwd(), path))
-      console.log(`Created ${written}`)
+      if (values.json) console.log(JSON.stringify({ created: written }))
+      else console.log(`Created ${written}`)
       return 0
     } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error))
+      const message = error instanceof Error ? error.message : String(error)
+      if (values.json) console.log(JSON.stringify({ error: message }))
+      else console.error(message)
       return 1
     }
   }
@@ -263,7 +282,20 @@ export async function main(argv: string[]): Promise<number> {
       archify: config.archify,
       audience,
     })
+
+    // Ruling 2: the same --audience filter that governed the pages governs
+    // this llms.txt too, written INTO the site output — one command, one
+    // self-consistent artifact. Links point at the emitted page files
+    // (`pageFileFor`), not the source .md paths, since only the pages exist
+    // at this location. Standalone `check --index` is untouched.
+    const llmsPath = siteLlmsTxtPath(result.outDir)
+    writeFileSync(
+      llmsPath,
+      buildLlmsTxt(config, docsForAudience(allDocs, audience), { linkFor: (doc) => pageFileFor(doc.key) }),
+    )
+
     console.log(`Wrote ${result.pages.length} page(s) and ${result.diagrams} diagram(s) to ${result.outDir}`)
+    console.log(`Wrote ${llmsPath}`)
     if (audience === 'client' && result.pages.length === 0) {
       console.log(emptyClientSiteMessage())
     }
@@ -277,12 +309,23 @@ export async function main(argv: string[]): Promise<number> {
 
   if (command === 'check') {
     const findings = checkDocs(allDocs, { strict: values.strict })
-    for (const finding of findings) console.log(formatFinding(finding))
+    const exitCode = checkExitCode(findings, Boolean(values.strict))
 
+    let indexPath: string | undefined
     if (values.index) {
-      const path = writeLlmsTxt(config, docsForAudience(allDocs, audience))
-      console.log(`Wrote ${path}`)
+      indexPath = writeLlmsTxt(config, docsForAudience(allDocs, audience))
     }
+
+    if (values.json) {
+      const errors = findings.filter((f) => f.severity === 'error').length
+      console.log(
+        JSON.stringify({ findings, errors, warnings: findings.length - errors, indexPath: indexPath ?? null, exitCode }),
+      )
+      return exitCode
+    }
+
+    for (const finding of findings) console.log(formatFinding(finding))
+    if (indexPath) console.log(`Wrote ${indexPath}`)
 
     if (findings.length === 0) {
       console.log('contrail check: clean.')
@@ -291,15 +334,48 @@ export async function main(argv: string[]): Promise<number> {
       const warnings = findings.length - errors
       console.log(`contrail check: ${errors} error(s), ${warnings} warning(s).`)
     }
-    return checkExitCode(findings, Boolean(values.strict))
+    return exitCode
   }
 
   if (command === 'status') {
     const lock = loadLock(config.root)
-    for (const doc of docs) {
-      const entry = lock.docs[doc.key]
-      console.log(`${entry?.pageId ?? 'unpublished'}  ${doc.frontmatter.status.padEnd(8)}  ${doc.key}`)
+    const report = docStatusReport(allDocs)
+    const stubs = new Set(report.stubs)
+    const noOwner = new Set(report.noOwner)
+    const overdue = new Set(report.overdue)
+
+    const entries = docs.map((doc) => ({
+      key: doc.key,
+      status: doc.frontmatter.status,
+      pageId: lock.docs[doc.key]?.pageId ?? null,
+      stub: stubs.has(doc.key),
+      noOwner: noOwner.has(doc.key),
+      overdue: overdue.has(doc.key),
+    }))
+
+    if (values.json) {
+      console.log(
+        JSON.stringify({
+          docs: entries,
+          missingCoreDocs: report.missingCoreDocs.map((f) => ({ section: f.doc, message: f.message })),
+          summary: { stubs: report.stubs.length, noOwner: report.noOwner.length, overdue: report.overdue.length },
+        }),
+      )
+      return 0
     }
+
+    for (const e of entries) {
+      const flags = [e.stub && 'stub', e.noOwner && 'no-owner', e.overdue && 'overdue'].filter(Boolean)
+      console.log(
+        `${e.pageId ?? 'unpublished'}  ${e.status.padEnd(8)}  ${e.key}${flags.length ? `  [${flags.join(',')}]` : ''}`,
+      )
+    }
+    console.log('')
+    console.log(
+      `Documentation health: ${report.stubs.length} stub(s), ${report.noOwner.length} with no owner, ` +
+        `${report.overdue.length} overdue for review.`,
+    )
+    for (const f of report.missingCoreDocs) console.log(`  MISSING  ${f.message}`)
     return 0
   }
 

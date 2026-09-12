@@ -100,6 +100,40 @@ describe('llms.txt filters identically to the site', () => {
   })
 })
 
+describe('Ruling 2: `site --audience` emits its own filtered llms.txt into the site output', () => {
+  it('a client site build\'s llms.txt contains no internal document path — grepped, not just a return value', async () => {
+    const root = setupCliWorkspace()
+    writeFileSync(
+      join(root, 'docs', 'brief.md'),
+      `${FM('audience: client\nkind: reference\n')}A client-visible brief.\n`,
+    )
+    mkdirSync(join(root, 'docs', '03-management'), { recursive: true })
+    writeFileSync(
+      join(root, 'docs', '03-management', 'budget.md'),
+      `${FM('docKind: budget\naudience: internal\nkind: reference\n')}Internal cost breakdown.\n`,
+    )
+
+    const { code } = await runInWorkspace(root, ['site', '--out', './site', '--audience', 'client'])
+    expect(code).toBe(0)
+
+    const llmsTxt = readFileSync(join(root, 'site', 'llms.txt'), 'utf8')
+    expect(llmsTxt).toContain('brief')
+    expect(llmsTxt).not.toContain('budget')
+    expect(llmsTxt).not.toMatch(/03-management/)
+  })
+
+  it('an unfiltered site build\'s llms.txt links to the emitted page files, not the source .md paths', async () => {
+    const root = setupCliWorkspace()
+    writeFileSync(join(root, 'docs', 'a.md'), `${FM('kind: reference\n')}Doc A.\n`)
+
+    const { code } = await runInWorkspace(root, ['site', '--out', './site'])
+    expect(code).toBe(0)
+
+    const llmsTxt = readFileSync(join(root, 'site', 'llms.txt'), 'utf8')
+    expect(llmsTxt).toContain('(docs__a.html)')
+  })
+})
+
 describe('client site: links to internal documents are defanged', () => {
   it('rewrites the link as plain text, reports it, and the internal path never reaches the HTML', async () => {
     const root = mkdtempSync(join(tmpdir(), 'contrail-audience-defang-'))
