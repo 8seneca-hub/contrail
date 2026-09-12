@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { exitCodeFor, findDocs, runInit } from '../src/cli.js'
+import { blockedMessageFor, exitCodeFor, findDocs, publishArgsFor, runInit } from '../src/cli.js'
 import { loadConfig } from '../src/config.js'
 import { parseDoc } from '../src/parse.js'
 import type { PublishResult } from '../src/plane/publish.js'
@@ -92,12 +92,54 @@ describe('--only filter', () => {
       repos: {},
       docs: ['./docs/**/*.md'],
     }
-    const only = 'auth'
-    const docs = findDocs(config)
-      .map((path) => parseDoc(path, config.root))
-      .filter((doc) => !only || doc.key.includes(only))
+    // Exercises the actual product code path (`publishArgsFor`, which itself
+    // calls the exported `filterByOnly`) rather than a reimplementation of
+    // the filter predicate, so it would fail if main()'s real filtering broke.
+    const allDocs = findDocs(config).map((path) => parseDoc(path, config.root))
+    const { docs } = publishArgsFor(allDocs, 'auth')
 
     expect(docs.map((doc) => doc.key)).toEqual(['docs/auth.md'])
+  })
+
+  it('never shrinks knownKeys, even when --only matches nothing', () => {
+    // Regression test for the archive bug: `publishArgsFor` is the single
+    // place the CLI assembles publishDocs' arguments, so this proves the
+    // wiring itself (not just publishDocs in isolation) keeps `knownKeys`
+    // as the FULL set while `docs` narrows to the --only match.
+    const root = mkdtempSync(join(tmpdir(), 'contrail-only-'))
+    mkdirSync(join(root, 'docs'), { recursive: true })
+    writeFileSync(
+      join(root, 'docs', 'auth.md'),
+      '---\ntitle: Auth\nsummary: Auth docs\nstatus: current\n---\n# Auth',
+    )
+    writeFileSync(
+      join(root, 'docs', 'billing.md'),
+      '---\ntitle: Billing\nsummary: Billing docs\nstatus: current\n---\n# Billing',
+    )
+
+    const config = {
+      root,
+      plane: { baseUrl: 'https://plane.test', workspace: 'acme' },
+      repos: {},
+      docs: ['./docs/**/*.md'],
+    }
+    const allDocs = findDocs(config).map((path) => parseDoc(path, config.root))
+
+    const matching = publishArgsFor(allDocs, 'auth')
+    expect(matching.docs.map((doc) => doc.key)).toEqual(['docs/auth.md'])
+    expect(matching.knownKeys.sort()).toEqual(['docs/auth.md', 'docs/billing.md'])
+
+    const noMatch = publishArgsFor(allDocs, 'nonexistent')
+    expect(noMatch.docs).toEqual([])
+    expect(noMatch.knownKeys.sort()).toEqual(['docs/auth.md', 'docs/billing.md'])
+  })
+})
+
+describe('blockedMessageFor', () => {
+  it('names the document and warns that --force discards the edit', () => {
+    const lines = blockedMessageFor('docs/settlement.md')
+    expect(lines.some((line) => line.includes('docs/settlement.md'))).toBe(true)
+    expect(lines.some((line) => /force/i.test(line) && /discard/i.test(line))).toBe(true)
   })
 })
 

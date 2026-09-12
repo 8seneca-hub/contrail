@@ -7,7 +7,7 @@ import { loadLock, saveLock } from './lock.js'
 import { parseDoc } from './parse.js'
 import { PlaneClient } from './plane/client.js'
 import { publishDocs, type PublishResult } from './plane/publish.js'
-import type { Config } from './types.js'
+import type { Config, Doc } from './types.js'
 
 const TEMPLATE = `export default {
   plane: {
@@ -33,6 +33,33 @@ export function findDocs(config: Config): string[] {
 /** Blocked documents mean someone's edit in Plane would be discarded; that must never look like success. */
 export function exitCodeFor(result: PublishResult): number {
   return result.blocked.length > 0 ? 1 : 0
+}
+
+/** The one `--only` filter predicate. Every command narrows via this, never a reimplementation of it. */
+export function filterByOnly(docs: Doc[], only: string | undefined): Doc[] {
+  return docs.filter((doc) => !only || doc.key.includes(only))
+}
+
+/**
+ * Assembles the `docs`/`knownKeys` pair for `publishDocs`. `docs` is what
+ * `--only` narrows to publish; `knownKeys` is always the FULL set of document
+ * keys found on disk, regardless of `--only`. The archive sweep in
+ * `publishDocs` must reason about `knownKeys`, never the filtered `docs` —
+ * otherwise `--only` (or a no-match filter) archives every unrelated page.
+ */
+export function publishArgsFor(
+  allDocs: Doc[],
+  only: string | undefined,
+): { docs: Doc[]; knownKeys: string[] } {
+  return { docs: filterByOnly(allDocs, only), knownKeys: allDocs.map((doc) => doc.key) }
+}
+
+/** The blocked-document safety warning. Names the document and warns that `--force` discards its edit. */
+export function blockedMessageFor(key: string): string[] {
+  return [
+    `BLOCKED  ${key} was edited in Plane since the last publish; nothing was written.`,
+    '         Re-publish with --force only if that edit can be discarded.',
+  ]
 }
 
 function requireApiKey(): string {
@@ -67,9 +94,8 @@ export async function main(argv: string[]): Promise<number> {
   }
 
   const config = loadConfig(findConfigPath(process.cwd()))
-  const docs = findDocs(config)
-    .map((path) => parseDoc(path, config.root))
-    .filter((doc) => !values.only || doc.key.includes(values.only))
+  const allDocs = findDocs(config).map((path) => parseDoc(path, config.root))
+  const { docs, knownKeys } = publishArgsFor(allDocs, values.only)
 
   if (command === 'build') {
     console.log(`${docs.length} document(s) parsed with no errors.`)
@@ -99,6 +125,7 @@ export async function main(argv: string[]): Promise<number> {
       client,
       lock,
       cacheDir: join(config.root, '.contrail', 'cache'),
+      knownKeys,
       options: { dryRun: values['dry-run'], force: values.force },
     })
 
@@ -109,8 +136,7 @@ export async function main(argv: string[]): Promise<number> {
         `skipped ${result.skipped.length}, archived ${result.archived.length}`,
     )
     for (const key of result.blocked) {
-      console.error(`BLOCKED  ${key} was edited in Plane since the last publish; nothing was written.`)
-      console.error('         Re-publish with --force only if that edit can be discarded.')
+      for (const line of blockedMessageFor(key)) console.error(line)
     }
     return exitCodeFor(result)
   }

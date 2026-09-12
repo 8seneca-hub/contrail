@@ -204,6 +204,47 @@ describe('publishDocs', () => {
     expect(lock.docs['gone.md']?.archived).toBe(true)
   })
 
+  it('does not archive a document present in knownKeys but filtered out of docs', async () => {
+    // Regression test for the --only archive bug: a filtered `docs` array must
+    // never be mistaken for the full set of documents on disk. `knownKeys`
+    // carries the true full set; anything present there is not "missing" and
+    // must survive even though it isn't in `docs` for this run.
+    const { root } = fixture()
+    const client = fakeClient()
+    const lock: Lock = {
+      version: 1,
+      docs: { 'other.md': { pageId: 'page-9', contentHash: 'c', remoteHash: 'r', assets: {} } },
+    }
+
+    const result = await publishDocs({
+      config,
+      docs: [],
+      client,
+      lock,
+      cacheDir: join(root, '.cache'),
+      knownKeys: ['other.md'],
+    })
+
+    expect(result.archived).toEqual([])
+    expect(client.calls).not.toContain('archivePage')
+    expect(lock.docs['other.md']?.archived).toBeUndefined()
+  })
+
+  it('falls back to docs as the full set when knownKeys is omitted (unchanged prior behavior)', async () => {
+    const { root } = fixture()
+    const client = fakeClient()
+    const lock: Lock = {
+      version: 1,
+      docs: { 'gone.md': { pageId: 'page-9', contentHash: 'c', remoteHash: 'r', assets: {} } },
+    }
+
+    const result = await publishDocs({ config, docs: [], client, lock, cacheDir: join(root, '.cache') })
+
+    expect(result.archived).toEqual(['gone.md'])
+    expect(client.calls).toContain('archivePage')
+    expect(lock.docs['gone.md']?.archived).toBe(true)
+  })
+
   it('does not re-archive a document whose lock entry is already archived', async () => {
     const { root } = fixture()
     const client = fakeClient()

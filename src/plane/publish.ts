@@ -70,12 +70,20 @@ export async function publishDocs(args: {
   lock: Lock
   cacheDir: string
   options?: PublishOptions
+  /**
+   * Full set of document keys on disk, independent of any `--only` filtering
+   * applied to `docs`. The archive sweep uses this to decide what is
+   * missing (and therefore archivable). When omitted, falls back to the
+   * keys of `docs` — this must ONLY happen when `docs` is already the
+   * complete, unfiltered set, or the sweep will archive filtered-out docs.
+   */
+  knownKeys?: string[]
 }): Promise<PublishResult> {
   const { client, lock, cacheDir } = args
   const options = args.options ?? {}
   const result: PublishResult = { created: [], updated: [], skipped: [], blocked: [], archived: [] }
   const limit = pLimit(CONCURRENCY)
-  const present = new Set(args.docs.map((doc) => doc.key))
+  const present = new Set(args.knownKeys ?? args.docs.map((doc) => doc.key))
 
   await Promise.all(
     args.docs.map((doc) =>
