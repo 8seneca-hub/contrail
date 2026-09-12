@@ -49,13 +49,20 @@ describe.skipIf(!live)('live Plane instance', () => {
       expect(result.created).toEqual(['contrail-smoke.md'])
 
       pageId = lock.docs['contrail-smoke.md']!.pageId
-      const pageUrl = `${process.env.PLANE_BASE_URL}/${process.env.PLANE_WORKSPACE}/pages/${pageId}`
-      // Print the id BEFORE any assertion runs: if an assertion below throws,
+      // The verified API surface only gives us GET /pages/{id}/ — there is no
+      // confirmed web UI route in PlaneApi, so the URL below is a best guess,
+      // not something contrail has checked against a real workspace. Print
+      // the id on its own line so it is trustworthy on its own even if the
+      // guessed URL doesn't match this reader's instance.
+      const guessedPageUrl = `${process.env.PLANE_BASE_URL}/${process.env.PLANE_WORKSPACE}/pages/${pageId}`
+      // Print this BEFORE any assertion runs: if an assertion below throws,
       // the finally block still archives the page, and this is the only
       // record of which page to have looked at.
       // eslint-disable-next-line no-console
       console.log(
-        `Open this page in Plane before it is archived: ${pageUrl}\n` +
+        'Open this page in Plane before it is archived.\n' +
+          `Page id: ${pageId}\n` +
+          `Best-guess URL (may not match your instance's routing): ${guessedPageUrl}\n` +
           'REMINDER: this test proves the markup survived Plane\'s sanitizer. ' +
           'It does NOT prove the diagram image renders — only a human looking at ' +
           'the page in a browser can confirm that. If the image is broken, ' +
