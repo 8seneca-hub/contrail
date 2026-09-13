@@ -63,7 +63,13 @@ export interface Config {
   plane: { baseUrl: string; workspace: string; collection?: string }
   repos: Record<string, string>
   docs: string[]
-  site?: { host: 'vercel' }
+  /**
+   * `internalUrl`/`clientUrl` are the deployed addresses of the two Vercel
+   * projects (see the M3 plan). Either or both may be absent — most trees
+   * won't have deployed yet — in which case the site keeps working with
+   * relative links; nothing here is mandatory.
+   */
+  site?: { host: 'vercel'; internalUrl?: string; clientUrl?: string }
   /** Archify CLI location. When `bin` is absent, `archify` is resolved from PATH. */
   archify?: { bin?: string }
   /** Google Sheets service-account credentials. `GOOGLE_APPLICATION_CREDENTIALS` takes precedence

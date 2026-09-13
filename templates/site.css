@@ -87,6 +87,52 @@ footer {
   padding-inline: 1.25rem;
 }
 
+/* Build-identity banner (Task 1): present on every page of a restricted build, absent everywhere
+   else — its absence is the signal, so this rule must never leak into the shared bytes both builds
+   copy from this same file as anything but styling for an element the other build simply never
+   emits. Kept loud (high-contrast, sticky) because the leak this exists to prevent is someone
+   printing a page to PDF without noticing what it says. */
+.notice-banner {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: #b91c1c;
+  color: #fff;
+  font-weight: 700;
+  text-align: center;
+  padding: 0.6rem 1rem;
+}
+
+/* Persistent section nav (Task 5): plain links to each section's landing page, laid out as a
+   horizontal strip directly under the banner (or page top, when there is none). Wraps rather than
+   scrolls at narrow widths so it never forces the page itself to scroll horizontally. */
+.section-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 1.25rem;
+  padding: 0.85rem 1.25rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-raised);
+}
+
+.section-nav a {
+  text-decoration: none;
+  color: var(--fg-muted);
+  font-size: 0.95rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.section-nav a:hover {
+  color: var(--fg);
+}
+
+.section-nav a[aria-current='page'] {
+  color: var(--link);
+  text-decoration: underline;
+  text-underline-offset: 0.25em;
+}
+
 .page-header {
   padding-block: 2rem 1rem;
 }
@@ -391,5 +437,21 @@ figure.sheet .sheet-table {
 
   figure.diagram iframe {
     height: 20rem;
+  }
+
+  .section-nav {
+    gap: 0.35rem 0.85rem;
+    padding: 0.75rem 1rem;
+  }
+}
+
+/* The realistic way a restricted build leaks is someone printing a page to PDF and sending that —
+   so the banner must survive `@media print` rather than vanish the way `position: sticky` and
+   background colors often do by default in a browser's print stylesheet. */
+@media print {
+  .notice-banner {
+    position: static;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
   }
 }

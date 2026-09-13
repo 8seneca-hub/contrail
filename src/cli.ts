@@ -3,7 +3,7 @@ import { join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import { globSync } from 'tinyglobby'
 import { buildLlmsTxt, checkDocs, checkExitCode, docStatusReport, writeLlmsTxt } from './check.js'
-import { findConfigPath, loadConfig } from './config.js'
+import { findConfigPath, loadConfig, readProjectMeta } from './config.js'
 import { buildSite, docsForAudience, pageFileFor } from './emit/site.js'
 import { loadLock, saveLock } from './lock.js'
 import { parseDoc } from './parse.js'
@@ -151,6 +151,17 @@ export function siteLlmsTxtPath(outDir: string): string {
 }
 
 /**
+ * Which of the two deployed addresses a build's own pages should claim as
+ * their site: `internalUrl` for the default (everything) build, `clientUrl`
+ * once `--audience client` narrows it. Either may be unconfigured — most
+ * trees haven't deployed yet — in which case the build keeps working with
+ * relative links (`buildSite`/`buildLlmsTxt` both treat `undefined` this way).
+ */
+export function siteUrlFor(config: Config, audience: Audience | undefined): string | undefined {
+  return audience === 'client' ? config.site?.clientUrl : config.site?.internalUrl
+}
+
+/**
  * The only valid `--audience` values: `'client'`, or omitted (which means
  * "everything"). Anything else — including `'internal'`, which sounds
  * plausible but is not a build mode — is a usage error, not a silent
@@ -275,23 +286,28 @@ export async function main(argv: string[]): Promise<number> {
   }
 
   if (command === 'site') {
+    const siteUrl = siteUrlFor(config, audience)
     const result = await buildSite({
       docs: allDocs,
       outDir: siteOutDirFor(config, values.out),
       cacheDir: join(config.root, '.contrail', 'cache'),
       archify: config.archify,
       audience,
+      projectName: readProjectMeta(config.root)?.project,
+      siteUrl,
     })
 
     // Ruling 2: the same --audience filter that governed the pages governs
     // this llms.txt too, written INTO the site output — one command, one
     // self-consistent artifact. Links point at the emitted page files
     // (`pageFileFor`), not the source .md paths, since only the pages exist
-    // at this location. Standalone `check --index` is untouched.
+    // at this location. Standalone `check --index` is untouched. `baseUrl`
+    // makes the links absolute when this build's own address is configured
+    // (Task 3): an agent can fetch a document directly instead of guessing.
     const llmsPath = siteLlmsTxtPath(result.outDir)
     writeFileSync(
       llmsPath,
-      buildLlmsTxt(config, docsForAudience(allDocs, audience), { linkFor: (doc) => pageFileFor(doc.key) }),
+      buildLlmsTxt(config, docsForAudience(allDocs, audience), { linkFor: (doc) => pageFileFor(doc.key), baseUrl: siteUrl }),
     )
 
     console.log(`Wrote ${result.pages.length} page(s) and ${result.diagrams} diagram(s) to ${result.outDir}`)
@@ -308,7 +324,7 @@ export async function main(argv: string[]): Promise<number> {
   }
 
   if (command === 'check') {
-    const findings = checkDocs(allDocs, { strict: values.strict })
+    const findings = checkDocs(allDocs, { strict: values.strict, internalUrl: config.site?.internalUrl })
     const exitCode = checkExitCode(findings, Boolean(values.strict))
 
     let indexPath: string | undefined

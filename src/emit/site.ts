@@ -11,6 +11,7 @@ import { matchAlert, stripAlertMarker, type AlertKind } from '../blocks/alert.js
 import { parseArchifyMeta } from '../blocks/archify.js'
 import { parseArtifactMeta } from '../blocks/artifact.js'
 import { parseSheetMeta, type SheetMeta } from '../blocks/sheet.js'
+import { readProjectMeta } from '../config.js'
 import { SECTIONS, type Section } from '../doc-kinds.js'
 import type { ArchifyOptions } from '../render/archify.js'
 import type { Mmdc } from '../render/mermaid.js'
@@ -50,6 +51,31 @@ export interface SiteEmitContext {
   filtered: boolean
   /** Every link rewritten to plain text because its target is not visible in this build. */
   defangedLinks: DefangedLink[]
+  /**
+   * Whether this build is the internal one (everything, or an explicit
+   * `audience: 'internal'`) as opposed to `audience: 'client'`. Drives the
+   * build-identity banner and the `<title>` marker (Task 1) — the client
+   * build's own emitted bytes must never contain the word "internal", so
+   * every place that renders it checks this flag rather than `filtered`
+   * (which is also true for, say, a hypothetical internal-only filter).
+   */
+  isInternal: boolean
+  /** The project name from `docs/00-meta/project.yml`, when one exists — carried in every `<title>`
+   * and as the index heading (Task 1). `undefined` for a tree without one; callers fall back. */
+  projectName?: string
+  /** This build's own deployed address (`site.internalUrl`/`site.clientUrl`), when configured — feeds
+   * the canonical link tag on every page (Task 3). `undefined` keeps pages relative-link-only. */
+  siteUrl?: string
+  /** The five sections (plus a virtual "other" bucket) that have at least one visible document in
+   * this build, in nav display order — what `sectionNavHtml` renders as tabs (Task 5). */
+  navSections: NavSection[]
+}
+
+/** One tab in the persistent section nav: `key` is also the landing page's directory
+ * (`${key}/index.html`), `title` its human label. */
+export interface NavSection {
+  key: string
+  title: string
 }
 
 export interface DefangedLink {
@@ -333,14 +359,73 @@ function transformAlerts(tree: Root): Replacement[] {
   return replacements
 }
 
-function pageShell(title: string, body: string, rootPrefix: string): string {
+/** Task 1's build-identity banner text. Rendered only on an internal build's pages (see
+ * `bannerHtml`) — a client build must never contain this string, in this file or in `site.css`. */
+const INTERNAL_NOTICE = 'Internal — contains commercial information. Not for client distribution.'
+
+/**
+ * The persistent build-identity banner (Task 1): present on every page of an internal build,
+ * entirely absent from a client build — the absence is itself the signal, not a hidden element.
+ * Its CSS class deliberately avoids the word "internal" so the one file shared by both audiences
+ * (`site.css`) never carries that word into a client build's emitted bytes.
+ */
+function bannerHtml(ctx: SiteEmitContext): string {
+  return ctx.isInternal ? `<div class="notice-banner" role="note">${escapeHtml(INTERNAL_NOTICE)}</div>\n` : ''
+}
+
+/**
+ * Task 5's persistent section nav: plain links to each section's landing page
+ * (`${key}/index.html`), not an ARIA tabs widget — real navigation to real pages needs no
+ * JavaScript to work, which a `role="tab"` pattern would (arrow-key handling, panel toggling).
+ * The active page's link carries `aria-current="page"`, the correct semantics for "you are here"
+ * navigation. `ctx.navSections` already excludes any section with no visible document in this
+ * build (Task 5, requirement 2), so an empty client build renders no nav at all.
+ */
+function sectionNavHtml(ctx: SiteEmitContext, activeKey: string | undefined, rootPrefix: string): string {
+  if (ctx.navSections.length === 0) return ''
+  const links = ctx.navSections
+    .map(({ key, title }) => {
+      const current = key === activeKey ? ' aria-current="page"' : ''
+      return `<a href="${rootPrefix}${key}/index.html"${current}>${escapeHtml(title)}</a>`
+    })
+    .join('\n')
+  return `<nav class="section-nav" aria-label="Documentation sections">\n${links}\n</nav>\n`
+}
+
+/**
+ * Task 1's `<title>`: the project name (from `docs/00-meta/project.yml`) appended to `base`, with
+ * an explicit `(internal)` marker on an internal build only — so two browser tabs never render the
+ * same string. A tree with no `project.yml` falls back to `base` alone, same as before this work.
+ */
+function pageTitleFor(base: string, ctx: SiteEmitContext): string {
+  const withProject = ctx.projectName ? `${base} · ${ctx.projectName}` : base
+  // The marker never depends on `projectName` being configured — the two builds must stay
+  // distinguishable even in a tree with no `docs/00-meta/project.yml` at all.
+  return ctx.isInternal ? `${withProject} (internal)` : withProject
+}
+
+/** Task 1's `<title>` for the index and every section landing page: these pages' own heading
+ * already IS the project name (or its section title) — unlike a document page, there is no
+ * separate "base" title to join it to, so only the `(internal)` marker gets appended. */
+function indexTitleFor(heading: string, ctx: SiteEmitContext): string {
+  return ctx.isInternal ? `${heading} (internal)` : heading
+}
+
+/** Task 3's canonical URL for a page: absolute against this build's own configured address, or
+ * `undefined` (no tag emitted) when none is configured — relative-link builds stay fully supported. */
+function canonicalFor(ctx: SiteEmitContext, pageFile: string): string | undefined {
+  return ctx.siteUrl ? `${ctx.siteUrl}/${pageFile}` : undefined
+}
+
+function pageShell(title: string, body: string, rootPrefix: string, canonicalUrl?: string): string {
+  const canonicalTag = canonicalUrl ? `\n<link rel="canonical" href="${escapeHtml(canonicalUrl)}">` : ''
   return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escapeHtml(title)}</title>
-<link rel="stylesheet" href="${rootPrefix}site.css">
+<link rel="stylesheet" href="${rootPrefix}site.css">${canonicalTag}
 </head>
 <body>
 ${body}
@@ -351,7 +436,8 @@ ${body}
 
 export function emitSite(doc: Doc, ctx: SiteEmitContext): string {
   const tree = structuredClone(doc.tree) as Root
-  const rootPrefix = rootPrefixFor(pageFileFor(doc.key))
+  const pageFile = pageFileFor(doc.key)
+  const rootPrefix = rootPrefixFor(pageFile)
   transformLinks(doc, tree, ctx)
   const replacements = transformCodeBlocks(doc, tree, ctx, rootPrefix)
   replacements.push(...transformAlerts(tree))
@@ -363,7 +449,10 @@ export function emitSite(doc: Doc, ctx: SiteEmitContext): string {
   }
 
   const { title, summary, status } = doc.frontmatter
-  const body = `<header class="page-header">
+  // `?? 'other'` mirrors `groupBySection`: a document outside the five sections is grouped (and
+  // navigable) under the virtual "other" tab, so its own page still marks a tab active when one exists.
+  const activeSection = sectionGroupFor(doc.key)?.section ?? OTHER_KEY
+  const body = `${bannerHtml(ctx)}${sectionNavHtml(ctx, activeSection, rootPrefix)}<header class="page-header">
 <p class="breadcrumb"><a href="${rootPrefix}index.html">&larr; All documents</a></p>
 <h1>${escapeHtml(title)}</h1>
 <p class="summary">${escapeHtml(summary)}</p>
@@ -373,7 +462,7 @@ export function emitSite(doc: Doc, ctx: SiteEmitContext): string {
 ${bodyHtml}
 </main>`
 
-  return pageShell(title, body, rootPrefix)
+  return pageShell(pageTitleFor(title, ctx), body, rootPrefix, canonicalFor(ctx, pageFile))
 }
 
 /** The five sections' human-readable titles, in numeric (display) order.
@@ -415,28 +504,44 @@ function sectionGroupFor(key: string): { section: Exclude<Section, '00-meta'>; s
   return { section: top as Exclude<Section, '00-meta'>, sub }
 }
 
-function docRow(doc: Doc): string {
+/** The virtual sixth "tab": documents outside the five sections. Not a real `Section` — there is no
+ * `other/` directory in the source tree — but it gets a real landing page (`other/index.html`) the
+ * same way a real section does, so those documents stay reachable from the nav. */
+const OTHER_KEY = 'other'
+const OTHER_TITLE = 'Other'
+
+/** A relative href from the page currently being rendered (`fromPageFile`) to a document's own
+ * page — never the bare root-relative `pageFileFor`, because this markup is shared between the
+ * root index (at the site root) and a section's own landing page (one directory down): the same
+ * document needs a different href depending on where it is being listed from. */
+function docRow(doc: Doc, fromPageFile: string): string {
+  const href = relativeHref(fromPageFile, pageFileFor(doc.key))
   return `<li class="doc-entry">
-<a href="${escapeHtml(pageFileFor(doc.key))}">${escapeHtml(doc.frontmatter.title)}</a>
+<a href="${escapeHtml(href)}">${escapeHtml(doc.frontmatter.title)}</a>
 <span class="status status-${escapeHtml(doc.frontmatter.status)}">${escapeHtml(doc.frontmatter.status)}</span>
 <p>${escapeHtml(doc.frontmatter.summary)}</p>
 </li>`
 }
 
-function docListHtml(docs: Doc[]): string {
-  return `<ul class="doc-list">\n${docs.map(docRow).join('\n')}\n</ul>`
+function docListHtml(docs: Doc[], fromPageFile: string): string {
+  return `<ul class="doc-list">\n${docs.map((doc) => docRow(doc, fromPageFile)).join('\n')}\n</ul>`
+}
+
+interface SectionGroup {
+  direct: Doc[]
+  subgroups: Map<string, Doc[]>
 }
 
 /**
- * The index groups documents by section, in numeric order, with nested
- * sub-directories (`03-management/meetings/`, ...) as nested groups under
- * their section rather than as siblings — the reader can then see where in
- * the five-section structure they are. Documents outside the five sections
- * appear last, under "Other"; `00-meta` documents (machine metadata, not
- * documentation) are excluded entirely.
+ * Groups documents by section, in numeric order, with nested sub-directories
+ * (`03-management/meetings/`, ...) as nested groups under their section rather than as siblings —
+ * the reader can then see where in the five-section structure they are. Documents outside the five
+ * sections are returned separately (`other`); `00-meta` documents (machine metadata, not
+ * documentation) are excluded entirely. Shared by the index (Task 5: shows its first non-empty
+ * section) and every section's own landing page.
  */
-function emitIndex(docs: Doc[]): string {
-  const bySection = new Map<Exclude<Section, '00-meta'>, { direct: Doc[]; subgroups: Map<string, Doc[]> }>()
+function groupBySection(docs: Doc[]): { bySection: Map<Exclude<Section, '00-meta'>, SectionGroup>; other: Doc[] } {
+  const bySection = new Map<Exclude<Section, '00-meta'>, SectionGroup>()
   const other: Doc[] = []
 
   for (const doc of docs) {
@@ -461,41 +566,90 @@ function emitIndex(docs: Doc[]): string {
     }
   }
 
-  const sectionsHtml = (Object.keys(SECTION_TITLES) as Array<keyof typeof SECTION_TITLES>)
-    .map((section) => {
-      const entry = bySection.get(section)
-      if (!entry) return ''
-      const direct = entry.direct.length > 0 ? docListHtml(entry.direct) : ''
-      const subgroups = [...entry.subgroups.entries()]
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([sub, list]) => `<h3>${escapeHtml(titleCaseSegment(sub))}</h3>\n${docListHtml(list)}`)
-        .join('\n')
-      return `<section class="doc-section">
-<h2>${escapeHtml(SECTION_TITLES[section])}</h2>
+  return { bySection, other }
+}
+
+function sectionGroupHtml(title: string, entry: SectionGroup, fromPageFile: string): string {
+  const direct = entry.direct.length > 0 ? docListHtml(entry.direct, fromPageFile) : ''
+  const subgroups = [...entry.subgroups.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([sub, list]) => `<h3>${escapeHtml(titleCaseSegment(sub))}</h3>\n${docListHtml(list, fromPageFile)}`)
+    .join('\n')
+  return `<section class="doc-section">
+<h2>${escapeHtml(title)}</h2>
 ${direct}
 ${subgroups}
 </section>`
-    })
-    .filter((html) => html.length > 0)
-    .join('\n')
+}
 
-  const otherHtml =
-    other.length > 0
-      ? `<section class="doc-section">
-<h2>Other</h2>
-${docListHtml(other)}
-</section>`
+/** The five sections (in numeric order) plus the virtual `OTHER_KEY`, restricted to whichever have
+ * at least one visible document in this build — Task 5, requirement 2: a section a client build
+ * excludes entirely gets no tab and no landing page, not even an empty one, so its mere existence
+ * never leaks. */
+function navSectionsFor(grouped: ReturnType<typeof groupBySection>): NavSection[] {
+  const sections: NavSection[] = []
+  for (const key of Object.keys(SECTION_TITLES) as Array<keyof typeof SECTION_TITLES>) {
+    const entry = grouped.bySection.get(key)
+    if (entry && (entry.direct.length > 0 || entry.subgroups.size > 0)) {
+      sections.push({ key, title: SECTION_TITLES[key] })
+    }
+  }
+  if (grouped.other.length > 0) sections.push({ key: OTHER_KEY, title: OTHER_TITLE })
+  return sections
+}
+
+/** One section's rendered body — reused by the index (its first non-empty section) and by that
+ * section's own landing page — or `''` for a key with nothing to show (an empty/unknown section). */
+function sectionBodyFor(
+  key: string,
+  grouped: ReturnType<typeof groupBySection>,
+  fromPageFile: string,
+): string {
+  if (key === OTHER_KEY) {
+    return grouped.other.length > 0
+      ? sectionGroupHtml(OTHER_TITLE, { direct: grouped.other, subgroups: new Map() }, fromPageFile)
       : ''
+  }
+  const entry = grouped.bySection.get(key as Exclude<Section, '00-meta'>)
+  return entry ? sectionGroupHtml(SECTION_TITLES[key as Exclude<Section, '00-meta'>], entry, fromPageFile) : ''
+}
 
-  const body = `<header class="page-header">
-<h1>Documentation</h1>
+/**
+ * The site root: Task 1's heading (the project name, not the generic "Documentation") over Task
+ * 5's tabbed view — the first non-empty section's documents, with the same persistent nav every
+ * other page carries. A build with nothing to show (an empty client build) still renders the
+ * banner/heading shell, just with no nav and no section body.
+ */
+function emitIndex(ctx: SiteEmitContext, grouped: ReturnType<typeof groupBySection>): string {
+  const first = ctx.navSections[0]
+  const heading = ctx.projectName ?? 'Documentation'
+  const mainHtml = first ? sectionBodyFor(first.key, grouped, 'index.html') : ''
+
+  const body = `${bannerHtml(ctx)}${sectionNavHtml(ctx, first?.key, '')}<header class="page-header">
+<h1>${escapeHtml(heading)}</h1>
 </header>
 <main>
-${sectionsHtml}
-${otherHtml}
+${mainHtml}
 </main>`
 
-  return pageShell('Documentation', body, '')
+  return pageShell(indexTitleFor(heading, ctx), body, '', canonicalFor(ctx, 'index.html'))
+}
+
+/** A section's own landing page (Task 5): everything the index shows for its first section, but
+ * for any one section, reachable directly and from the persistent nav on every other page. */
+function emitSectionPage(ctx: SiteEmitContext, key: string, title: string, grouped: ReturnType<typeof groupBySection>): string {
+  const pageFile = `${key}/index.html`
+  const rootPrefix = rootPrefixFor(pageFile)
+  const mainHtml = sectionBodyFor(key, grouped, pageFile)
+
+  const body = `${bannerHtml(ctx)}${sectionNavHtml(ctx, key, rootPrefix)}<header class="page-header">
+<p class="breadcrumb"><a href="${rootPrefix}index.html">&larr; All documents</a></p>
+</header>
+<main>
+${mainHtml}
+</main>`
+
+  return pageShell(pageTitleFor(title, ctx), body, rootPrefix, canonicalFor(ctx, pageFile))
 }
 
 /** Every document contrail knows about that would be published for the given audience filter.
@@ -516,8 +670,14 @@ export async function buildSite(args: {
   archify?: ArchifyOptions
   /** `'client'` emits only `audience: client` documents. Omitted, the default publishes everything. */
   audience?: Audience
+  /** The project name from `docs/00-meta/project.yml` (Task 1) — `undefined` for a tree without
+   * one, in which case every page falls back to its pre-M3 title/heading. */
+  projectName?: string
+  /** This build's own deployed address (Task 3) — `site.internalUrl` for an internal build,
+   * `site.clientUrl` for a client one. `undefined` keeps every page's links relative. */
+  siteUrl?: string
 }): Promise<SiteResult> {
-  const { docs, outDir, cacheDir, mmdc, archify, audience } = args
+  const { docs, outDir, cacheDir, mmdc, archify, audience, projectName, siteUrl } = args
   const emitted = docsForAudience(docs, audience)
   const emittedKeys = new Set(emitted.map((doc) => doc.key))
   const docPages = new Map(
@@ -560,7 +720,21 @@ export async function buildSite(args: {
   }
 
   const defangedLinks: DefangedLink[] = []
-  const ctx: SiteEmitContext = { diagramPaths, assetPaths, docs: docPages, filtered: audience !== undefined, defangedLinks }
+  const grouped = groupBySection(emitted)
+  const navSections = navSectionsFor(grouped)
+  const ctx: SiteEmitContext = {
+    diagramPaths,
+    assetPaths,
+    docs: docPages,
+    filtered: audience !== undefined,
+    defangedLinks,
+    // Only an explicit `audience: 'client'` build (the only other value the type allows) omits the
+    // banner and drops the "(internal)" title marker — the default (everything) build is internal.
+    isInternal: audience !== 'client',
+    projectName,
+    siteUrl,
+    navSections,
+  }
   const pages: string[] = []
   for (const doc of emitted) {
     const pagePath = join(outDir, pageFileFor(doc.key))
@@ -569,7 +743,15 @@ export async function buildSite(args: {
     pages.push(doc.key)
   }
 
-  writeFileSync(join(outDir, 'index.html'), emitIndex(emitted))
+  writeFileSync(join(outDir, 'index.html'), emitIndex(ctx, grouped))
+
+  // Task 5: one landing page per non-empty section/tab, so the nav on every other page has
+  // somewhere real to point. `navSections` already excludes anything with no visible document.
+  for (const { key, title } of navSections) {
+    const dir = join(outDir, key)
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'index.html'), emitSectionPage(ctx, key, title, grouped))
+  }
 
   return { outDir, pages, diagrams: diagramCount, defangedLinks }
 }

@@ -69,6 +69,25 @@ export function loadConfig(configPath: string): Config {
     }
   }
 
+  if (raw.site !== undefined) {
+    if (typeof raw.site !== 'object' || raw.site === null) {
+      throw new ConfigError(`${configPath}: \`site\` must be an object.`)
+    }
+    for (const key of ['internalUrl', 'clientUrl'] as const) {
+      if (raw.site[key] !== undefined && typeof raw.site[key] !== 'string') {
+        throw new ConfigError(`${configPath}: \`site.${key}\` must be a string.`)
+      }
+    }
+  }
+
+  // Trailing slashes are stripped once here so every consumer (llms.txt,
+  // canonical tags) can join with `/${path}` without worrying about `//`.
+  const site = raw.site && {
+    ...raw.site,
+    internalUrl: raw.site.internalUrl?.replace(/\/+$/, ''),
+    clientUrl: raw.site.clientUrl?.replace(/\/+$/, ''),
+  }
+
   return {
     root: dirname(configPath),
     plane: {
@@ -78,7 +97,7 @@ export function loadConfig(configPath: string): Config {
     },
     repos,
     docs: raw.docs,
-    site: raw.site,
+    site,
     archify: raw.archify,
     sheets: raw.sheets,
   }

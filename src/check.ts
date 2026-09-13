@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, relative, resolve, sep } from 'node:path'
 import { visit } from 'unist-util-visit'
-import type { Heading, List, Root, RootContent, Text } from 'mdast'
+import type { Heading, Link, List, Root, RootContent, Text } from 'mdast'
 import { parseAttrs } from './blocks/attrs.js'
 import { readProjectMeta } from './config.js'
 import { DOC_KIND_SECTION, SECTIONS, type DocKind, type Section } from './doc-kinds.js'
@@ -317,6 +317,33 @@ function checkUnclassifiedMoneyDoc(doc: Doc, findings: Finding[]): void {
 }
 
 /**
+ * The audience boundary, part three: a client-visible document must never
+ * link to the internal site's own address. Vercel Authentication keeps the
+ * internal deployment itself out of reach, but the URL alone already tells
+ * the client "a document about you exists here" — that is a leak in its
+ * own right, independent of whether they can log in. Only fires when
+ * `site.internalUrl` is configured; a tree with no deployed internal site
+ * yet has nothing to compare against.
+ */
+function checkClientDocLinksInternal(doc: Doc, internalUrl: string | undefined, findings: Finding[]): void {
+  if (!internalUrl || doc.frontmatter.audience !== 'client') return
+
+  visit(doc.tree, 'link', (node: Link) => {
+    if (node.url !== internalUrl && !node.url.startsWith(`${internalUrl}/`)) return
+    findings.push({
+      doc: doc.key,
+      line: node.position?.start.line,
+      rule: 'client-doc-links-internal',
+      severity: 'error',
+      message:
+        `This client-visible document links to the internal site (${node.url}). A client can never reach ` +
+        'that page, but the URL alone tells them a document about them exists there — remove the link, ' +
+        'or point it at `site.clientUrl` instead.',
+    })
+  })
+}
+
+/**
  * Whether a document is still shaped like a freshly scaffolded stub: the
  * placeholder body `renderDocFile`/`renderIndexStub` (scaffold.ts) write —
  * a heading or two and a bullet list of guiding questions/notes, no prose.
@@ -474,7 +501,7 @@ function checkUnreviewed(doc: Doc, findings: Finding[]): void {
   })
 }
 
-export function checkDocs(docs: Doc[], _opts: { strict?: boolean } = {}): Finding[] {
+export function checkDocs(docs: Doc[], opts: { strict?: boolean; internalUrl?: string } = {}): Finding[] {
   const findings: Finding[] = []
 
   for (const doc of docs) {
@@ -493,6 +520,7 @@ export function checkDocs(docs: Doc[], _opts: { strict?: boolean } = {}): Findin
     checkStaleDoc(doc, findings)
     checkInternalDocExposed(doc, findings)
     checkUnclassifiedMoneyDoc(doc, findings)
+    checkClientDocLinksInternal(doc, opts.internalUrl, findings)
     checkEmptyStub(doc, findings)
     checkOrphanDoc(doc, findings)
     checkNoOwner(doc, findings)
@@ -569,6 +597,15 @@ export interface BuildLlmsTxtOptions {
    * site output links to files that actually exist there.
    */
   linkFor?: (doc: Doc) => string
+  /**
+   * When set, every entry links with an absolute URL against this site
+   * address instead of the bare path `linkFor` returns — so an agent can
+   * fetch the document directly rather than guess at its path. `contrail
+   * site` passes `site.internalUrl`/`site.clientUrl` depending on which
+   * audience is building; a tree with neither configured keeps the
+   * relative link, which is the default and remains fully supported.
+   */
+  baseUrl?: string
 }
 
 /**
@@ -601,7 +638,9 @@ export function buildLlmsTxt(config: Config, docs: Doc[], opts: BuildLlmsTxtOpti
 
   const entry = (doc: Doc): string => {
     const stale = doc.frontmatter.status === 'stale' ? ' (stale)' : ''
-    return `- [${doc.frontmatter.title}](${linkFor(doc)}): ${doc.frontmatter.summary}${stale}`
+    const path = linkFor(doc)
+    const href = opts.baseUrl ? `${opts.baseUrl}/${path}` : path
+    return `- [${doc.frontmatter.title}](${href}): ${doc.frontmatter.summary}${stale}`
   }
 
   for (const { kind, label } of KIND_ORDER) {

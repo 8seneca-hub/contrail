@@ -379,24 +379,43 @@ describe('Fix 5: the index groups documents by section', () => {
 
     const index = readFileSync(join(outDir, 'index.html'), 'utf8')
 
+    // Task 5: the nav lists every non-empty section as a tab, in numeric order, with the virtual
+    // "Other" tab last — and the index shows only the first non-empty section (Overview) inline.
     expect(index).toContain('Overview &amp; Initiation')
-    expect(index).toContain('Management &amp; Operations')
-    expect(index).toContain('Testing &amp; Handover')
-    expect(index).toContain('Meetings')
-    expect(index).toContain('Decisions')
-    expect(index).toContain('QA Reports')
-    expect(index).toContain('Other')
-    expect(index).toContain('Stray')
-    // 00-meta is machine metadata, never a document — excluded entirely,
-    // not merely folded into "Other".
-    expect(index).not.toContain('Meta Notes')
+    expect(index).toContain('Brief')
+    // The other sections show up only as nav tabs, never with their own content inlined.
+    expect(index).not.toContain('<h2>Management &amp; Operations</h2>')
+    expect(index).not.toContain('Meetings')
+    expect(index).not.toContain('Stray')
 
-    // Numeric order: Overview, then Management, then Testing & Handover.
-    const overviewAt = index.indexOf('Overview &amp; Initiation')
-    const managementAt = index.indexOf('Management &amp; Operations')
-    const deliveryAt = index.indexOf('Testing &amp; Handover')
+    const overviewAt = index.indexOf('>Overview &amp; Initiation<')
+    const managementAt = index.indexOf('>Management &amp; Operations<')
+    const deliveryAt = index.indexOf('>Testing &amp; Handover<')
+    const otherAt = index.indexOf('>Other<')
     expect(overviewAt).toBeGreaterThanOrEqual(0)
     expect(overviewAt).toBeLessThan(managementAt)
     expect(managementAt).toBeLessThan(deliveryAt)
+    expect(deliveryAt).toBeLessThan(otherAt)
+    // 02-planning and 04-technical have no documents in this build — no tab for either.
+    expect(index).not.toContain('Planning &amp; Scope')
+    expect(index).not.toContain('Technical &amp; Design')
+
+    // Each section's own landing page carries its own content, reachable from the shared nav.
+    const management = readFileSync(join(outDir, '03-management', 'index.html'), 'utf8')
+    expect(management).toContain('Meetings')
+    expect(management).toContain('Decisions')
+
+    const delivery = readFileSync(join(outDir, '05-delivery', 'index.html'), 'utf8')
+    expect(delivery).toContain('QA Reports')
+
+    const other = readFileSync(join(outDir, 'other', 'index.html'), 'utf8')
+    expect(other).toContain('Stray')
+
+    // 00-meta is machine metadata, never a document — excluded entirely, not merely folded into
+    // "Other", and absent from every page including its own would-be landing page.
+    for (const page of [index, management, delivery, other]) {
+      expect(page).not.toContain('Meta Notes')
+    }
+    expect(existsSync(join(outDir, '00-meta', 'index.html'))).toBe(false)
   })
 })
