@@ -4,7 +4,7 @@ import { parseArgs } from 'node:util'
 import { globSync } from 'tinyglobby'
 import { buildLlmsTxt, checkDocs, checkExitCode, docStatusReport, writeLlmsTxt } from './check.js'
 import { findConfigPath, loadConfig, readProjectMeta } from './config.js'
-import { contextEmptyMessage, contextQuery, isTaskType, TASK_TYPES, type TaskType } from './context.js'
+import { contextEmptyMessage, contextQuery, contextRule, isTaskType, TASK_TYPES, type TaskType } from './context.js'
 import { defaultCliRunner, deploy, parseDeployAudience } from './deploy.js'
 import { buildSite, docsForAudience, pageFileFor } from './emit/site.js'
 import { loadLock, saveLock } from './lock.js'
@@ -440,8 +440,14 @@ export async function main(argv: string[]): Promise<number> {
     const results = contextQuery(allDocs, query)
 
     if (values.json) {
+      const jsonResults = results.map(({ note: _note, ...rest }) => rest)
       console.log(
-        JSON.stringify({ results, count: results.length, message: results.length === 0 ? contextEmptyMessage(query) : null }),
+        JSON.stringify({
+          rule: contextRule(query),
+          results: jsonResults,
+          count: results.length,
+          message: results.length === 0 ? contextEmptyMessage(query) : null,
+        }),
       )
       return 0
     }
@@ -450,10 +456,12 @@ export async function main(argv: string[]): Promise<number> {
       console.log(contextEmptyMessage(query))
       return 0
     }
+    console.log(contextRule(query))
+    console.log('')
     results.forEach((entry, i) => {
       const stale = entry.status === 'stale' ? ' (stale)' : ''
       console.log(`${i + 1}. ${entry.docKind ?? '(no docKind)'}${stale}  ${entry.path}`)
-      console.log(`   ${entry.title} — ${entry.reason}`)
+      console.log(`   ${entry.title}${entry.note ? ` — ${entry.note}` : ''}`)
     })
     return 0
   }

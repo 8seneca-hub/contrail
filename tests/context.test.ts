@@ -28,7 +28,9 @@ describe('contextQuery: task types return their documented docKinds in order', (
       const results = contextQuery(docs, { task })
       expect(results.map((r) => r.docKind)).toEqual([...kinds])
       for (const r of results) {
-        expect(r.reason).toMatch(new RegExp(`docKind '${r.docKind}' ranks \\d+ of ${kinds.length}`))
+        // The full ranking explanation ("adr ranks 1 of 2...") now lives once in `contextRule`,
+        // not repeated per row — each row's machine-readable `reason` is just its short code.
+        expect(r.reason).toContain(`docKind:${r.docKind}`)
       }
     })
   }
@@ -56,7 +58,8 @@ describe('contextQuery: keyword-only queries (no --task)', () => {
     ]
     const matched = contextQuery(allDocs, { keywords: ['pricing'] })
     expect(matched.map((r) => r.path)).toEqual([pricing.key])
-    expect(matched[0]!.reason).toContain("matched keyword(s) 'pricing'")
+    expect(matched[0]!.reason).toContain('keyword:pricing')
+    expect(matched[0]!.note).toContain('matched "pricing"')
   })
 })
 
@@ -75,7 +78,8 @@ describe('contextQuery: a stale document ranks last and is labelled', () => {
     const results = contextQuery([stalePrd, adr], { task: 'feature' })
     expect(results.map((r) => r.path)).toEqual([adr.key, stalePrd.key])
     expect(results[1]!.status).toBe('stale')
-    expect(results[1]!.reason).toContain('ranked last')
+    expect(results[1]!.reason).toContain('stale')
+    expect(results[1]!.note).toContain('may be the only record')
     // Never dropped, even though it ranked last:
     expect(results.map((r) => r.path)).toContain(stalePrd.key)
   })
