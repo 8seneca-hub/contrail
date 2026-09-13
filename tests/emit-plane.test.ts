@@ -172,6 +172,20 @@ describe('emitPlane', () => {
       expect(() => emitPlane(d, { assetIds: {}, updated: '2026-09-12' })).toThrow(/fallback/)
     })
 
+    it('an archify block throws a clear error naming the document, the block type and the line — never dropped silently', () => {
+      const d = makeDoc(
+        '```archify {type=workflow, src=./diagrams/x.workflow.json, summary="A workflow."}\n```\n',
+      )
+      expect(() => emitPlane(d, { assetIds: {}, updated: '2026-09-12' })).toThrow(/doc\.md:\d+/)
+      expect(() => emitPlane(d, { assetIds: {}, updated: '2026-09-12' })).toThrow(/archify/)
+    })
+
+    it('a sheet block throws a clear error naming the document, the block type and the line — never dropped silently', () => {
+      const d = makeDoc('```sheet {id="abc123", range="Sheet1!A1:B2"}\n```\n')
+      expect(() => emitPlane(d, { assetIds: {}, updated: '2026-09-12' })).toThrow(/doc\.md:\d+/)
+      expect(() => emitPlane(d, { assetIds: {}, updated: '2026-09-12' })).toThrow(/sheet/)
+    })
+
     it('status: current emits no status callout', () => {
       const html = emitPlane(doc('current'), { assetIds: ctx.assetIds, updated: ctx.updated })
       expect(html).not.toMatch(/Draft —|In review —|Stale —/)

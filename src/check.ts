@@ -1,8 +1,9 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
-import { dirname, join, relative, resolve, sep } from 'node:path'
+import { basename, dirname, join, relative, resolve, sep } from 'node:path'
 import { visit } from 'unist-util-visit'
 import type { Heading, List, Root, RootContent, Text } from 'mdast'
 import { parseAttrs } from './blocks/attrs.js'
+import { readProjectMeta } from './config.js'
 import { DOC_KIND_SECTION, SECTIONS, type DocKind, type Section } from './doc-kinds.js'
 import { CORE_DOC_KINDS } from './scaffold.js'
 import type { Config, Doc } from './types.js'
@@ -570,10 +571,20 @@ export interface BuildLlmsTxtOptions {
   linkFor?: (doc: Doc) => string
 }
 
+/**
+ * The `llms.txt` title: the project name from `docs/00-meta/project.yml`
+ * when one exists, else the workspace directory name. Never the Plane
+ * `workspace` slug — that is an internal system identifier, and this is
+ * the one build that must never leak internal material.
+ */
+function llmsTxtTitle(config: Config): string {
+  return readProjectMeta(config.root)?.project ?? basename(config.root)
+}
+
 export function buildLlmsTxt(config: Config, docs: Doc[], opts: BuildLlmsTxtOptions = {}): string {
   const indexDir = dirname(llmsTxtPath(config))
   const linkFor = opts.linkFor ?? ((doc: Doc) => relative(indexDir, resolve(config.root, doc.key)).split(sep).join('/'))
-  const lines: string[] = [`# ${config.plane.workspace}`, '', `> Index of every contrail-managed document.`, '']
+  const lines: string[] = [`# ${llmsTxtTitle(config)}`, '', `> Index of every contrail-managed document.`, '']
 
   const grouped = new Map<string, Doc[]>()
   const uncategorized: Doc[] = []

@@ -211,7 +211,7 @@ export async function main(argv: string[]): Promise<number> {
   if (command === 'help') {
     console.log(
       'contrail init [--template agency-project] | build | status [--json] | ' +
-        'publish [--dry-run] [--force] [--only <substring>] | ' +
+        'publish [--dry-run] [--force] [--only <substring>] [--audience client] | ' +
         'site [--out <dir>] [--audience client] | check [--strict] [--index] [--audience client] [--json] | ' +
         'scaffold <docKind> <path> [--json] | sheet pull <doc> | sheet push <doc> [--force]',
     )
@@ -390,7 +390,12 @@ export async function main(argv: string[]): Promise<number> {
     const options: PublishOptions = { dryRun: values['dry-run'], force: values.force }
     const result = await publishAndSave({
       config,
-      docs,
+      // The same audience filter `site`/`check` apply — `knownKeys` stays the
+      // FULL set (see `publishArgsFor`) so the archive sweep is unaffected;
+      // only which documents are ELIGIBLE to publish narrows here. Omitted,
+      // `docsForAudience` returns `docs` unchanged — the default stays
+      // "publish everything".
+      docs: docsForAudience(docs, audience),
       client,
       lock,
       cacheDir: join(config.root, '.contrail', 'cache'),

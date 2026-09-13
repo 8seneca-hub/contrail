@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { createJiti } from 'jiti'
 import type { Config } from './types.js'
@@ -82,4 +82,38 @@ export function loadConfig(configPath: string): Config {
     archify: raw.archify,
     sheets: raw.sheets,
   }
+}
+
+export interface ProjectMeta {
+  client: string
+  project: string
+  startDate: string
+}
+
+const PROJECT_META_KEYS = ['client', 'project', 'startDate'] as const
+
+/**
+ * Reads `docs/00-meta/project.yml` — written by `runInitTemplate` in
+ * scaffold.ts and, until now, never read by anything. Only the three
+ * fields `renderProjectYml` ever writes: no general YAML parsing, since
+ * the file's shape is entirely owned by that one writer. Returns
+ * `undefined` when the file is absent — most trees, and most test
+ * fixtures, will not have one — so callers must fall back sensibly
+ * rather than treat a missing file as an error.
+ */
+export function readProjectMeta(root: string): ProjectMeta | undefined {
+  const path = join(root, 'docs', '00-meta', 'project.yml')
+  if (!existsSync(path)) return undefined
+
+  const values: Partial<Record<(typeof PROJECT_META_KEYS)[number], string>> = {}
+  for (const line of readFileSync(path, 'utf8').split('\n')) {
+    const match = /^(client|project|startDate):\s*(.*)$/.exec(line.trim())
+    if (!match) continue
+    const key = match[1] as (typeof PROJECT_META_KEYS)[number]
+    const rawValue = match[2]!
+    values[key] = rawValue.startsWith('"') ? (JSON.parse(rawValue) as string) : rawValue
+  }
+
+  if (!values.client || !values.project || !values.startDate) return undefined
+  return { client: values.client, project: values.project, startDate: values.startDate }
 }

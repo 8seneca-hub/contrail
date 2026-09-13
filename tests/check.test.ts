@@ -1,6 +1,6 @@
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { buildLlmsTxt, checkDocs, checkExitCode, llmsTxtPath, writeLlmsTxt } from '../src/check.js'
 import { parseDoc } from '../src/parse.js'
@@ -357,7 +357,11 @@ Body.
 `)
 
     const txt = buildLlmsTxt(cfg, [a, b, c])
-    expect(txt).toMatch(/^# acme/)
+    // No docs/00-meta/project.yml in this fixture — the title falls back to
+    // the directory name, never the Plane `workspace` slug (see the two
+    // titling tests below).
+    expect(txt).toMatch(new RegExp(`^# ${basename(root)}`))
+    expect(txt).not.toContain('acme')
     expect(txt).toContain('## Tutorial')
     expect(txt).toContain('[Tutorial Doc]')
     expect(txt).toContain('## Reference')
@@ -365,6 +369,31 @@ Body.
     expect(txt).toContain('(stale)')
     expect(txt).toContain('## Uncategorized')
     expect(txt).toContain('[No Kind]')
+  })
+
+  it('titles the index with the project name from docs/00-meta/project.yml when one exists', () => {
+    const root = mkdtempSync(join(tmpdir(), 'contrail-llms-titled-'))
+    const cfg = config(root)
+    mkdirSync(join(root, 'docs', '00-meta'), { recursive: true })
+    writeFileSync(
+      join(root, 'docs', '00-meta', 'project.yml'),
+      'client: "Client Co"\nproject: "Consumer Portal Rebuild"\nstartDate: "2026-01-01"\n',
+    )
+
+    const txt = buildLlmsTxt(cfg, [])
+    expect(txt).toMatch(/^# Consumer Portal Rebuild/)
+    // The Plane workspace slug is an internal system identifier and must
+    // never appear in this build, project.yml or not.
+    expect(txt).not.toContain('acme')
+  })
+
+  it('falls back to the directory name, and never the Plane workspace slug, when project.yml is absent', () => {
+    const root = mkdtempSync(join(tmpdir(), 'contrail-llms-untitled-'))
+    const cfg = config(root)
+
+    const txt = buildLlmsTxt(cfg, [])
+    expect(txt).toMatch(new RegExp(`^# ${basename(root)}`))
+    expect(txt).not.toContain('acme')
   })
 
   it('writeLlmsTxt writes to docs/llms.txt under the config root', () => {

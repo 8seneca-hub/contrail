@@ -17,6 +17,7 @@ import {
   siteOutDirFor,
 } from '../src/cli.js'
 import { loadConfig } from '../src/config.js'
+import { docsForAudience } from '../src/emit/site.js'
 import { hashContent, loadLock } from '../src/lock.js'
 import { parseDoc } from '../src/parse.js'
 import type { PlaneApi } from '../src/plane/client.js'
@@ -344,6 +345,88 @@ describe('publishAndSave', () => {
   })
 })
 
+describe('publish --audience (Fix 4: publish was ignoring the audience filter)', () => {
+  function fakeSuccessClient(): PlaneApi & { created: string[] } {
+    const created: string[] = []
+    let nextPageId = 1
+    return {
+      created,
+      createPage: async (input) => {
+        created.push(input.name)
+        return { id: `page-${nextPageId++}`, parentLinkPending: false }
+      },
+      getPage: async (pageId) => ({ id: pageId, name: '', description_html: '', updated_at: '' }),
+      updatePage: async () => {},
+      archivePage: async () => {},
+      createAssetUpload: async () => ({ asset_id: 'asset-1', upload_data: { url: 'https://s3.test', fields: {} } }),
+      uploadAssetBytes: async () => {},
+      confirmAttachment: async () => {},
+    }
+  }
+
+  it('a mixed tree publishes only the client documents; knownKeys (the archive sweep) still covers everything', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'contrail-publish-audience-'))
+    mkdirSync(join(root, 'docs'), { recursive: true })
+    writeFileSync(
+      join(root, 'docs', 'client.md'),
+      '---\ntitle: Client Doc\nsummary: S\nstatus: current\naudience: client\n---\n\nBody.\n',
+    )
+    writeFileSync(
+      join(root, 'docs', 'internal.md'),
+      '---\ntitle: Internal Doc\nsummary: S\nstatus: current\naudience: internal\n---\n\nBody.\n',
+    )
+    const config: Config = {
+      root,
+      plane: { baseUrl: 'https://plane.test', workspace: 'acme' },
+      repos: {},
+      docs: ['./docs/**/*.md'],
+    }
+    const allDocs = [
+      parseDoc(join(root, 'docs', 'client.md'), root),
+      parseDoc(join(root, 'docs', 'internal.md'), root),
+    ]
+    const { docs, knownKeys } = publishArgsFor(allDocs, undefined)
+
+    // The exact composition main() now does for `publish --audience client`.
+    const eligible = docsForAudience(docs, 'client')
+    expect(eligible.map((d) => d.key)).toEqual(['docs/client.md'])
+
+    const client = fakeSuccessClient()
+    const lock: Lock = { version: 1, docs: {} }
+    const result = await publishAndSave({
+      config,
+      docs: eligible,
+      client,
+      lock,
+      cacheDir: join(root, '.cache'),
+      knownKeys,
+      options: {},
+    })
+
+    expect(result.created).toEqual(['docs/client.md'])
+    expect(client.created).toEqual(['Client Doc'])
+    // Never hit the network — `fakeSuccessClient` never opens a socket.
+    // `knownKeys` (the archive sweep) is unaffected by the audience filter —
+    // only which documents are ELIGIBLE to publish narrows.
+    expect(knownKeys).toEqual(['docs/client.md', 'docs/internal.md'])
+  })
+
+  it('omitting --audience keeps the default: every document is eligible, matching prior behavior', () => {
+    const client = parseDocFixture('client', 'client')
+    const internal = parseDocFixture('internal', 'internal')
+    expect(docsForAudience([client, internal], undefined)).toEqual([client, internal])
+  })
+
+  function parseDocFixture(name: string, audience: 'client' | 'internal') {
+    const root = mkdtempSync(join(tmpdir(), 'contrail-publish-audience-default-'))
+    writeFileSync(
+      join(root, `${name}.md`),
+      `---\ntitle: T\nsummary: S\nstatus: current\naudience: ${audience}\n---\n\nBody.\n`,
+    )
+    return parseDoc(join(root, `${name}.md`), root)
+  }
+})
+
 describe('siteOutDirFor', () => {
   const config: Config = {
     root: '/workspace',
@@ -390,7 +473,9 @@ describe('site command (via main)', () => {
     }
 
     expect(existsSync(join(root, 'site', 'index.html'))).toBe(true)
-    expect(existsSync(join(root, 'site', 'docs__plain.html'))).toBe(true)
+    // The site mirrors the source tree (docs/ dropped) rather than
+    // flattening it with `__`.
+    expect(existsSync(join(root, 'site', 'plain.html'))).toBe(true)
     expect(existsSync(join(root, 'site', 'site.css'))).toBe(true)
     expect(readFileSync(join(root, 'site', 'index.html'), 'utf8')).toContain('Plain')
   })

@@ -82,6 +82,20 @@ function transformCodeBlocks(doc: Doc, tree: Root, ctx: PlaneEmitContext): void 
       const uuid = ctx.assetIds[id]
       if (!uuid) throw new Error(`${where}: no uploaded asset for fallback ${meta.fallback}`)
       parent.children.splice(index, 1, imageComponent(uuid, id), text(meta.summary))
+      return
+    }
+
+    if (node.lang === 'archify' || node.lang === 'sheet') {
+      // Both fences are meta-only — no rendered body to fall back on the way
+      // `mermaid` and `artifact` have an uploaded asset. `site.ts` and `md.ts`
+      // throw rather than silently drop the diagram or the live-sheet table;
+      // the Plane emitter must not be the one place that loses content
+      // quietly. This is dormant while Plane Community lacks the Pages API —
+      // loud failure now is correct so it stays loud the day that changes,
+      // rather than corrupting a published page silently. Implementing
+      // `archify`/`sheet` rendering for Plane is separate reactivation work.
+      const where = `${doc.key}:${node.position?.start.line ?? '?'}`
+      throw new Error(`${where}: the Plane emitter does not yet support \`${node.lang}\` blocks.`)
     }
   })
 }

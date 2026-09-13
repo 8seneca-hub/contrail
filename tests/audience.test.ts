@@ -130,7 +130,9 @@ describe('Ruling 2: `site --audience` emits its own filtered llms.txt into the s
     expect(code).toBe(0)
 
     const llmsTxt = readFileSync(join(root, 'site', 'llms.txt'), 'utf8')
-    expect(llmsTxt).toContain('(docs__a.html)')
+    // The site mirrors the source tree (docs/ dropped, real nested
+    // directories otherwise) rather than flattening it with `__`.
+    expect(llmsTxt).toContain('(a.html)')
   })
 })
 
@@ -175,6 +177,34 @@ describe('client site: links to internal documents are defanged', () => {
       expect(html).not.toContain('budget.md')
     }
     expect(existsSync(join(outDir, pageFileFor(budget.key)))).toBe(false)
+  })
+
+  it('defangs a link to a non-.md internal file the same way — extension does not matter', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'contrail-audience-defang-nonmd-'))
+    mkdirSync(join(root, 'docs', '03-management'), { recursive: true })
+    writeFileSync(join(root, 'docs', '03-management', 'budget.xlsx'), 'not a real spreadsheet')
+    const brief = writeDocAt(
+      root,
+      'docs/01-overview/brief.md',
+      `${FM('audience: client\n')}See the [budget spreadsheet](../03-management/budget.xlsx) for detail.\n`,
+    )
+
+    const outDir = join(root, 'site')
+    const result = await buildSite({
+      docs: [brief],
+      outDir,
+      cacheDir: join(root, '.cache'),
+      audience: 'client',
+    })
+
+    expect(result.defangedLinks).toEqual([{ doc: brief.key, url: '../03-management/budget.xlsx' }])
+
+    for (const file of readdirSync(outDir)) {
+      if (!file.endsWith('.html')) continue
+      const html = readFileSync(join(outDir, file), 'utf8')
+      expect(html).not.toContain('03-management/budget')
+      expect(html).not.toContain('budget.xlsx')
+    }
   })
 })
 

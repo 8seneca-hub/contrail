@@ -1,6 +1,6 @@
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { buildSite } from '../src/emit/site.js'
 import { parseDoc } from '../src/parse.js'
@@ -269,5 +269,134 @@ graph TD; A-->B;
     expect(page).toContain('<blockquote>')
     expect(page).toContain('Just a quote, not an alert.')
     expect(page).not.toContain('callout')
+  })
+})
+
+describe('Fix 5: the site mirrors the source doc tree instead of flattening it', () => {
+  it('emits a nested page at the section path, not a flattened docs__section__file.html', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'contrail-site-nest-'))
+    mkdirSync(join(root, 'docs', '04-technical'), { recursive: true })
+    writeFileSync(join(root, 'docs', '04-technical', 'prd.md'), `${FRONTMATTER}The PRD.\n`)
+    const doc = parseDoc(join(root, 'docs', '04-technical', 'prd.md'), root)
+
+    const outDir = join(root, 'out')
+    await buildSite({ docs: [doc], outDir, cacheDir: join(root, '.cache') })
+
+    expect(existsSync(join(outDir, '04-technical', 'prd.html'))).toBe(true)
+    expect(existsSync(join(outDir, 'docs__04-technical__prd.html'))).toBe(false)
+  })
+
+  it('rewrites a relative link between two documents so it resolves, crossing sections in both directions', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'contrail-site-crosslink-'))
+    mkdirSync(join(root, 'docs', '04-technical'), { recursive: true })
+    mkdirSync(join(root, 'docs', '03-management'), { recursive: true })
+    writeFileSync(
+      join(root, 'docs', '04-technical', 'prd.md'),
+      `${FRONTMATTER}See the [budget](../03-management/budget.md) for cost detail.\n`,
+    )
+    writeFileSync(
+      join(root, 'docs', '03-management', 'budget.md'),
+      `${FRONTMATTER}See the [PRD](../04-technical/prd.md) for scope.\n`,
+    )
+    const prd = parseDoc(join(root, 'docs', '04-technical', 'prd.md'), root)
+    const budget = parseDoc(join(root, 'docs', '03-management', 'budget.md'), root)
+
+    const outDir = join(root, 'out')
+    await buildSite({ docs: [prd, budget], outDir, cacheDir: join(root, '.cache') })
+
+    const prdPage = readFileSync(join(outDir, '04-technical', 'prd.html'), 'utf8')
+    const budgetPage = readFileSync(join(outDir, '03-management', 'budget.html'), 'utf8')
+
+    const prdHref = /<a href="([^"]+)">budget<\/a>/.exec(prdPage)?.[1]
+    const budgetHref = /<a href="([^"]+)">PRD<\/a>/.exec(budgetPage)?.[1]
+    expect(prdHref).toBeDefined()
+    expect(budgetHref).toBeDefined()
+
+    // Resolve each href against the page that actually carries it — the way
+    // a browser would — and confirm it lands on the real emitted file, not
+    // just that the string looks plausible.
+    const resolvedFromPrd = resolve(dirname(join(outDir, '04-technical', 'prd.html')), prdHref!)
+    const resolvedFromBudget = resolve(dirname(join(outDir, '03-management', 'budget.html')), budgetHref!)
+    expect(resolvedFromPrd).toBe(join(outDir, '03-management', 'budget.html'))
+    expect(resolvedFromBudget).toBe(join(outDir, '04-technical', 'prd.html'))
+  })
+
+  it('a diagram embedded two levels deep still resolves its iframe src', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'contrail-site-deep-diagram-'))
+    mkdirSync(join(root, 'docs', '03-management', 'decisions'), { recursive: true })
+    writeFileSync(join(root, 'docs', '03-management', 'decisions', 'x.workflow.json'), '{"nodes":[]}')
+    writeFileSync(
+      join(root, 'docs', '03-management', 'decisions', '0001-x.md'),
+      `${FRONTMATTER}\`\`\`archify {type=workflow, src=./x.workflow.json, summary="A decision flow."}
+\`\`\`
+`,
+    )
+    const doc = parseDoc(join(root, 'docs', '03-management', 'decisions', '0001-x.md'), root)
+
+    const outDir = join(root, 'out')
+    await buildSite({ docs: [doc], outDir, cacheDir: join(root, '.cache'), archify: { runner: okArchifyRunner() } })
+
+    const page = readFileSync(join(outDir, '03-management', 'decisions', '0001-x.html'), 'utf8')
+    const src = /<iframe src="([^"]+)"/.exec(page)?.[1]
+    expect(src).toBeDefined()
+    const resolved = resolve(dirname(join(outDir, '03-management', 'decisions', '0001-x.html')), src!)
+    expect(existsSync(resolved)).toBe(true)
+    expect(resolved.startsWith(join(outDir, 'diagrams') + '/')).toBe(true)
+  })
+})
+
+describe('Fix 5: the index groups documents by section', () => {
+  function writeAt(root: string, rel: string, frontmatter: string) {
+    const path = join(root, rel)
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, frontmatter)
+    return parseDoc(path, root)
+  }
+
+  it('groups by section in numeric order, titles sub-directories, excludes 00-meta, and puts the rest under Other', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'contrail-site-index-groups-'))
+    const overview = writeAt(root, 'docs/01-overview/brief.md', '---\ntitle: Brief\nsummary: S\nstatus: current\n---\n\nBody.\n')
+    const meeting = writeAt(
+      root,
+      'docs/03-management/meetings/2026-01-01.md',
+      '---\ntitle: Meeting\nsummary: S\nstatus: current\n---\n\nBody.\n',
+    )
+    const decision = writeAt(
+      root,
+      'docs/03-management/decisions/0001-x.md',
+      '---\ntitle: Decision\nsummary: S\nstatus: current\n---\n\nBody.\n',
+    )
+    const qa = writeAt(
+      root,
+      'docs/05-delivery/qa-reports/report.md',
+      '---\ntitle: QA Report\nsummary: S\nstatus: current\n---\n\nBody.\n',
+    )
+    const meta = writeAt(root, 'docs/00-meta/notes.md', '---\ntitle: Meta Notes\nsummary: S\nstatus: current\n---\n\nBody.\n')
+    const stray = writeAt(root, 'random.md', '---\ntitle: Stray\nsummary: S\nstatus: current\n---\n\nBody.\n')
+
+    const outDir = join(root, 'out')
+    await buildSite({ docs: [overview, meeting, decision, qa, meta, stray], outDir, cacheDir: join(root, '.cache') })
+
+    const index = readFileSync(join(outDir, 'index.html'), 'utf8')
+
+    expect(index).toContain('Overview &amp; Initiation')
+    expect(index).toContain('Management &amp; Operations')
+    expect(index).toContain('Testing &amp; Handover')
+    expect(index).toContain('Meetings')
+    expect(index).toContain('Decisions')
+    expect(index).toContain('QA Reports')
+    expect(index).toContain('Other')
+    expect(index).toContain('Stray')
+    // 00-meta is machine metadata, never a document — excluded entirely,
+    // not merely folded into "Other".
+    expect(index).not.toContain('Meta Notes')
+
+    // Numeric order: Overview, then Management, then Testing & Handover.
+    const overviewAt = index.indexOf('Overview &amp; Initiation')
+    const managementAt = index.indexOf('Management &amp; Operations')
+    const deliveryAt = index.indexOf('Testing &amp; Handover')
+    expect(overviewAt).toBeGreaterThanOrEqual(0)
+    expect(overviewAt).toBeLessThan(managementAt)
+    expect(managementAt).toBeLessThan(deliveryAt)
   })
 })

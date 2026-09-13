@@ -1,5 +1,5 @@
 import { copyFileSync, mkdirSync, writeFileSync } from 'node:fs'
-import { dirname, extname, join, resolve } from 'node:path'
+import { dirname, extname, join, posix, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import rehypeStringify from 'rehype-stringify'
 import remarkRehype from 'remark-rehype'
@@ -11,6 +11,7 @@ import { matchAlert, stripAlertMarker, type AlertKind } from '../blocks/alert.js
 import { parseArchifyMeta } from '../blocks/archify.js'
 import { parseArtifactMeta } from '../blocks/artifact.js'
 import { parseSheetMeta, type SheetMeta } from '../blocks/sheet.js'
+import { SECTIONS, type Section } from '../doc-kinds.js'
 import type { ArchifyOptions } from '../render/archify.js'
 import type { Mmdc } from '../render/mermaid.js'
 import { getSnapshot, sheetUrlFor, type SheetSnapshot } from '../sheets/snapshot.js'
@@ -24,15 +25,29 @@ export interface SiteEmitContext {
   /** `AssetPlan.id` -> path relative to the site root, e.g. "assets/<hash>.png". */
   assetPaths: Record<string, string>
   /**
-   * Every known document's absolute path -> whether it is being emitted in
-   * this build. Drives link defanging: a link into a document this build
-   * will NOT emit must never reach the page as a working — or even
-   * readable — href, because the href itself (e.g. `03-management/budget.md`)
-   * would still name a document the reader was never meant to know exists.
-   * A path absent from this map is not a document contrail knows about
-   * (an external URL, an asset, ...) and is left untouched.
+   * Every known document's absolute path -> its emitted page file (root-
+   * relative, e.g. `"04-technical/prd.html"`) and whether it is being
+   * emitted in this build. Drives both link rewriting and link defanging:
+   * a visible link is rewritten to the correct relative href for the
+   * (possibly nested) output; a link into a document this build will NOT
+   * emit must never reach the page as a working — or even readable — href,
+   * because the href itself (e.g. `03-management/budget.md`) would still
+   * name a document the reader was never meant to know exists. A path
+   * absent from this map is not a document contrail knows about (an
+   * external URL, an asset, ...) and is left untouched, unless `filtered`
+   * and it looks like a section-directory path — see `isSectionPath`.
    */
-  docVisibility: Map<string, boolean>
+  docs: Map<string, { pageFile: string; visible: boolean }>
+  /**
+   * Whether this build is filtered to an audience (`site --audience client`),
+   * as opposed to the unfiltered "publish everything" default. Only a
+   * filtered build defangs a link into a section directory that `docVisibility`
+   * has no entry for at all — a link to a non-`.md` file (a PDF, a spreadsheet
+   * export) never becomes a tracked `Doc`, so `docVisibility` can't say
+   * whether it's visible; a section-directory link like that is exactly the
+   * shape of an internal-file leak a client build must not emit.
+   */
+  filtered: boolean
   /** Every link rewritten to plain text because its target is not visible in this build. */
   defangedLinks: DefangedLink[]
 }
@@ -59,11 +74,33 @@ export function escapeHtml(value: string): string {
   return value.replace(/[&<>"]/g, (c) => map[c]!)
 }
 
-/** Every page lives flat at the output root, so root-relative links like
- * `diagrams/<hash>.html` and `assets/<hash>.png` resolve the same from any
- * page regardless of the document's original nesting. */
+/**
+ * The site mirrors the source doc tree: `docs/04-technical/prd.md` emits to
+ * `04-technical/prd.html`, real nested directories and all. The leading
+ * `docs/` segment is dropped — it is noise at the root of a docs site.
+ * `diagrams/` and `assets/` stay at the site root regardless (they're
+ * content-addressed and shared across documents); callers reach them via
+ * `rootPrefixFor`, not by assuming every page is a root-level sibling.
+ */
 export function pageFileFor(key: string): string {
-  return key.replace(/\.md$/, '.html').replace(/\//g, '__')
+  return key.replace(/^docs\//, '').replace(/\.md$/, '.html')
+}
+
+/** "../" once per directory level `pageFile` sits below the site root — the
+ * number of steps back to reach `diagrams/`, `assets/`, `site.css` or
+ * `index.html`, all of which live at the root regardless of how deep the
+ * page emitting the reference is nested. */
+function rootPrefixFor(pageFile: string): string {
+  const dir = posix.dirname(pageFile)
+  return dir === '.' ? '' : `${dir.split('/').map(() => '..').join('/')}/`
+}
+
+/** A relative href from one emitted page to another, computed on their
+ * actual (possibly nested) output locations — the original markdown-relative
+ * URL was written against the source tree and rarely still matches once
+ * sections emit into real directories. */
+function relativeHref(fromPageFile: string, toPageFile: string): string {
+  return posix.relative(posix.dirname(fromPageFile), toPageFile)
 }
 
 function figureForDiagram(path: string, summary: string): string {
@@ -132,7 +169,7 @@ interface Replacement {
  * literal quote and truncate it. A plain-text placeholder never gets parsed
  * as markup, so nothing gets a second, unwanted decode.
  */
-function transformCodeBlocks(doc: Doc, tree: Root, ctx: SiteEmitContext): Replacement[] {
+function transformCodeBlocks(doc: Doc, tree: Root, ctx: SiteEmitContext, rootPrefix: string): Replacement[] {
   const replacements: Replacement[] = []
 
   visit(tree, 'code', (node: Code, index: number | undefined, parent: Parent | undefined) => {
@@ -145,18 +182,18 @@ function transformCodeBlocks(doc: Doc, tree: Root, ctx: SiteEmitContext): Replac
       const irPath = resolve(dirname(doc.absPath), meta.src)
       const path = ctx.diagramPaths[irPath]
       if (!path) throw new Error(`${where}: no rendered diagram found for ${meta.src}`)
-      markup = figureForDiagram(path, meta.summary)
+      markup = figureForDiagram(rootPrefix + path, meta.summary)
     } else if (node.lang === 'mermaid') {
       const id = assetIdForDiagram(node.value)
       const path = ctx.assetPaths[id]
       if (!path) throw new Error(`${where}: no rendered asset found for this mermaid diagram`)
-      markup = `<img src="${escapeHtml(path)}" loading="lazy" alt="Diagram">`
+      markup = `<img src="${escapeHtml(rootPrefix + path)}" loading="lazy" alt="Diagram">`
     } else if (node.lang === 'artifact') {
       const meta = parseArtifactMeta(node.meta, where)
       const id = assetIdForFile(meta.fallback)
       const path = ctx.assetPaths[id]
       if (!path) throw new Error(`${where}: no rendered asset found for ${meta.fallback}`)
-      markup = figureForAsset(path, meta.summary)
+      markup = figureForAsset(rootPrefix + path, meta.summary)
     } else if (node.lang === 'sheet') {
       const meta = parseSheetMeta(node.meta, where)
       const snapshot = getSnapshot(doc, meta.id, meta.range)
@@ -201,26 +238,56 @@ function resolveLinkTarget(doc: Doc, url: string): string | undefined {
   return resolve(dirname(doc.absPath), withoutFragment)
 }
 
+const SECTION_PATH_PATTERN = new RegExp(`(?:^|[\\\\/])(?:${SECTIONS.join('|')})(?:[\\\\/]|$)`)
+
+/** Whether a resolved absolute path falls inside one of contrail's project
+ * sections (`03-management`, ...) — regardless of whether the file at that
+ * path is a `.md` document contrail actually tracks. */
+function isSectionPath(absPath: string): boolean {
+  return SECTION_PATH_PATTERN.test(absPath)
+}
+
 /**
  * A client-visible page must never carry a working — or readable — link to
- * a document this build excludes. `ctx.docVisibility` covers every document
- * contrail knows about (not just the ones being emitted), so a link into an
- * excluded one is recognized even though that document's own page was never
- * written. The link is replaced by its own plain text: no href survives,
- * because the href alone (e.g. `03-management/budget.md`) is enough to leak
- * that the document exists.
+ * a document this build excludes. `ctx.docs` covers every document contrail
+ * knows about (not just the ones being emitted), so a link into an excluded
+ * one is recognized even though that document's own page was never written.
+ * The link is replaced by its own plain text: no href survives, because the
+ * href alone (e.g. `03-management/budget.md`) is enough to leak that the
+ * document exists.
+ *
+ * A link into a document that IS visible is rewritten to the correct
+ * relative href for the (possibly nested) emitted output — the original
+ * markdown-relative URL was written against the source tree, and once
+ * sections emit into real directories it rarely still points at the right
+ * place.
+ *
+ * `ctx.docs` only ever has entries for `.md` files matched by the
+ * configured glob — a link to a non-`.md` file inside a section directory
+ * (`03-management/budget.xlsx`) resolves to no entry at all. In a filtered
+ * (audience) build, that absence is not "safe to leave alone": the rule is
+ * "if I am not emitting it, I do not link to it", regardless of extension.
  */
 function transformLinks(doc: Doc, tree: Root, ctx: SiteEmitContext): void {
+  const fromPageFile = pageFileFor(doc.key)
   visit(tree, 'link', (node: Link, index: number | undefined, parent: Parent | undefined) => {
     if (parent === undefined || index === undefined) return
     const target = resolveLinkTarget(doc, node.url)
     if (target === undefined) return
-    const visible = ctx.docVisibility.get(target)
-    if (visible === undefined || visible) return // not a document contrail tracks, or it is visible: leave it
+    const known = ctx.docs.get(target)
 
-    ctx.defangedLinks.push({ doc: doc.key, url: node.url })
-    const text: Text = { type: 'text', value: linkText(node) }
-    parent.children.splice(index, 1, text)
+    const defang = known === undefined ? ctx.filtered && isSectionPath(target) : !known.visible
+    if (defang) {
+      ctx.defangedLinks.push({ doc: doc.key, url: node.url })
+      const text: Text = { type: 'text', value: linkText(node) }
+      parent.children.splice(index, 1, text)
+      return
+    }
+    if (known === undefined) return // not a document contrail tracks: leave it exactly as written
+
+    const withoutSuffix = node.url.split('#')[0]!.split('?')[0]!
+    const suffix = node.url.slice(withoutSuffix.length)
+    node.url = relativeHref(fromPageFile, known.pageFile) + suffix
   })
 }
 
@@ -266,14 +333,14 @@ function transformAlerts(tree: Root): Replacement[] {
   return replacements
 }
 
-function pageShell(title: string, body: string): string {
+function pageShell(title: string, body: string, rootPrefix: string): string {
   return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escapeHtml(title)}</title>
-<link rel="stylesheet" href="site.css">
+<link rel="stylesheet" href="${rootPrefix}site.css">
 </head>
 <body>
 ${body}
@@ -284,8 +351,9 @@ ${body}
 
 export function emitSite(doc: Doc, ctx: SiteEmitContext): string {
   const tree = structuredClone(doc.tree) as Root
+  const rootPrefix = rootPrefixFor(pageFileFor(doc.key))
   transformLinks(doc, tree, ctx)
-  const replacements = transformCodeBlocks(doc, tree, ctx)
+  const replacements = transformCodeBlocks(doc, tree, ctx, rootPrefix)
   replacements.push(...transformAlerts(tree))
 
   const processor = unified().use(remarkRehype).use(rehypeStringify)
@@ -296,7 +364,7 @@ export function emitSite(doc: Doc, ctx: SiteEmitContext): string {
 
   const { title, summary, status } = doc.frontmatter
   const body = `<header class="page-header">
-<p class="breadcrumb"><a href="index.html">&larr; All documents</a></p>
+<p class="breadcrumb"><a href="${rootPrefix}index.html">&larr; All documents</a></p>
 <h1>${escapeHtml(title)}</h1>
 <p class="summary">${escapeHtml(summary)}</p>
 <span class="status status-${escapeHtml(status)}">${escapeHtml(status)}</span>
@@ -305,30 +373,129 @@ export function emitSite(doc: Doc, ctx: SiteEmitContext): string {
 ${bodyHtml}
 </main>`
 
-  return pageShell(title, body)
+  return pageShell(title, body, rootPrefix)
 }
 
-function emitIndex(docs: Doc[]): string {
-  const rows = docs
-    .map(
-      (doc) => `<li class="doc-entry">
+/** The five sections' human-readable titles, in numeric (display) order.
+ * `00-meta` is deliberately absent — it is machine metadata, never a
+ * document, and is excluded from the index entirely (see `emitIndex`). */
+const SECTION_TITLES: Record<Exclude<Section, '00-meta'>, string> = {
+  '01-overview': 'Overview & Initiation',
+  '02-planning': 'Planning & Scope',
+  '03-management': 'Management & Operations',
+  '04-technical': 'Technical & Design',
+  '05-delivery': 'Testing & Handover',
+}
+
+/** Title-cases a directory-name path segment for display: `"qa-reports"` ->
+ * `"QA Reports"`, `"change-requests"` -> `"Change Requests"`. `qa` is the one
+ * segment whose plain capitalize-first-letter title case is wrong — it is
+ * an acronym. */
+function titleCaseSegment(segment: string): string {
+  return segment
+    .split('-')
+    .map((word) => (word.toLowerCase() === 'qa' ? 'QA' : word.charAt(0).toUpperCase() + word.slice(1)))
+    .join(' ')
+}
+
+/**
+ * The section (and, when the document sits inside one, its immediate
+ * sub-directory) a document belongs to — read from its own path, not
+ * `frontmatter.section`, so the index groups by where a document actually
+ * lives even when nobody has classified it. `undefined` means "not inside
+ * one of the five sections" (grouped into "Other" by `emitIndex`); `00-meta`
+ * is handled separately by `emitIndex` itself, since it is excluded outright
+ * rather than folded into "Other".
+ */
+function sectionGroupFor(key: string): { section: Exclude<Section, '00-meta'>; sub?: string } | undefined {
+  const segments = key.replace(/^docs\//, '').split('/')
+  const top = segments[0]
+  if (top === undefined || top === '00-meta' || !(SECTIONS as readonly string[]).includes(top)) return undefined
+  const sub = segments.length > 2 ? segments[1] : undefined
+  return { section: top as Exclude<Section, '00-meta'>, sub }
+}
+
+function docRow(doc: Doc): string {
+  return `<li class="doc-entry">
 <a href="${escapeHtml(pageFileFor(doc.key))}">${escapeHtml(doc.frontmatter.title)}</a>
 <span class="status status-${escapeHtml(doc.frontmatter.status)}">${escapeHtml(doc.frontmatter.status)}</span>
 <p>${escapeHtml(doc.frontmatter.summary)}</p>
-</li>`,
-    )
+</li>`
+}
+
+function docListHtml(docs: Doc[]): string {
+  return `<ul class="doc-list">\n${docs.map(docRow).join('\n')}\n</ul>`
+}
+
+/**
+ * The index groups documents by section, in numeric order, with nested
+ * sub-directories (`03-management/meetings/`, ...) as nested groups under
+ * their section rather than as siblings — the reader can then see where in
+ * the five-section structure they are. Documents outside the five sections
+ * appear last, under "Other"; `00-meta` documents (machine metadata, not
+ * documentation) are excluded entirely.
+ */
+function emitIndex(docs: Doc[]): string {
+  const bySection = new Map<Exclude<Section, '00-meta'>, { direct: Doc[]; subgroups: Map<string, Doc[]> }>()
+  const other: Doc[] = []
+
+  for (const doc of docs) {
+    if (doc.key.replace(/^docs\//, '').split('/')[0] === '00-meta') continue
+
+    const group = sectionGroupFor(doc.key)
+    if (!group) {
+      other.push(doc)
+      continue
+    }
+    let entry = bySection.get(group.section)
+    if (!entry) {
+      entry = { direct: [], subgroups: new Map() }
+      bySection.set(group.section, entry)
+    }
+    if (group.sub === undefined) {
+      entry.direct.push(doc)
+    } else {
+      const list = entry.subgroups.get(group.sub) ?? []
+      list.push(doc)
+      entry.subgroups.set(group.sub, list)
+    }
+  }
+
+  const sectionsHtml = (Object.keys(SECTION_TITLES) as Array<keyof typeof SECTION_TITLES>)
+    .map((section) => {
+      const entry = bySection.get(section)
+      if (!entry) return ''
+      const direct = entry.direct.length > 0 ? docListHtml(entry.direct) : ''
+      const subgroups = [...entry.subgroups.entries()]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([sub, list]) => `<h3>${escapeHtml(titleCaseSegment(sub))}</h3>\n${docListHtml(list)}`)
+        .join('\n')
+      return `<section class="doc-section">
+<h2>${escapeHtml(SECTION_TITLES[section])}</h2>
+${direct}
+${subgroups}
+</section>`
+    })
+    .filter((html) => html.length > 0)
     .join('\n')
+
+  const otherHtml =
+    other.length > 0
+      ? `<section class="doc-section">
+<h2>Other</h2>
+${docListHtml(other)}
+</section>`
+      : ''
 
   const body = `<header class="page-header">
 <h1>Documentation</h1>
 </header>
 <main>
-<ul class="doc-list">
-${rows}
-</ul>
+${sectionsHtml}
+${otherHtml}
 </main>`
 
-  return pageShell('Documentation', body)
+  return pageShell('Documentation', body, '')
 }
 
 /** Every document contrail knows about that would be published for the given audience filter.
@@ -353,7 +520,12 @@ export async function buildSite(args: {
   const { docs, outDir, cacheDir, mmdc, archify, audience } = args
   const emitted = docsForAudience(docs, audience)
   const emittedKeys = new Set(emitted.map((doc) => doc.key))
-  const docVisibility = new Map(docs.map((doc) => [resolve(doc.absPath), emittedKeys.has(doc.key)]))
+  const docPages = new Map(
+    docs.map((doc) => [
+      resolve(doc.absPath),
+      { pageFile: pageFileFor(doc.key), visible: emittedKeys.has(doc.key) },
+    ] as const),
+  )
 
   mkdirSync(outDir, { recursive: true })
   mkdirSync(join(outDir, 'diagrams'), { recursive: true })
@@ -388,10 +560,12 @@ export async function buildSite(args: {
   }
 
   const defangedLinks: DefangedLink[] = []
-  const ctx: SiteEmitContext = { diagramPaths, assetPaths, docVisibility, defangedLinks }
+  const ctx: SiteEmitContext = { diagramPaths, assetPaths, docs: docPages, filtered: audience !== undefined, defangedLinks }
   const pages: string[] = []
   for (const doc of emitted) {
-    writeFileSync(join(outDir, pageFileFor(doc.key)), emitSite(doc, ctx))
+    const pagePath = join(outDir, pageFileFor(doc.key))
+    mkdirSync(dirname(pagePath), { recursive: true })
+    writeFileSync(pagePath, emitSite(doc, ctx))
     pages.push(doc.key)
   }
 
