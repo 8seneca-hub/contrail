@@ -1,0 +1,477 @@
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff;
+  --bg-raised: #f6f7f9;
+  --fg: #1a1d23;
+  --fg-muted: #5a6270;
+  --border: #e2e5ea;
+  --link: #1d5fd6;
+  --link-visited: #6b3fb8;
+  --status-draft-bg: #fffbeb;
+  --status-draft-fg: #92400e;
+  --status-review-bg: #eff6ff;
+  --status-review-fg: #1e40af;
+  --status-current-bg: #ecfdf5;
+  --status-current-fg: #065f46;
+  --status-stale-bg: #fef2f2;
+  --status-stale-fg: #991b1b;
+  --code-bg: #f2f3f5;
+  /* Alert callouts reuse the status palette (note~review, tip~current,
+     warning~draft, caution~stale) and add only the one tone with no status
+     equivalent. */
+  --callout-important-bg: #eef2ff;
+  --callout-important-fg: #4338ca;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --bg: #16181d;
+    --bg-raised: #1e2127;
+    --fg: #e7e9ee;
+    --fg-muted: #9aa3b2;
+    --border: #2b2f37;
+    --link: #7fa8ff;
+    --link-visited: #b79bec;
+    --status-draft-bg: #3a2f11;
+    --status-draft-fg: #f2c464;
+    --status-review-bg: #16273f;
+    --status-review-fg: #8fb8ff;
+    --status-current-bg: #0f2c22;
+    --status-current-fg: #6fd9ae;
+    --status-stale-bg: #3a1414;
+    --status-stale-fg: #f29b9b;
+    --code-bg: #21252c;
+    --callout-important-bg: #201c47;
+    --callout-important-fg: #b4beff;
+  }
+}
+
+:root[data-theme='dark'] {
+  --bg: #16181d;
+  --bg-raised: #1e2127;
+  --fg: #e7e9ee;
+  --fg-muted: #9aa3b2;
+  --border: #2b2f37;
+  --link: #7fa8ff;
+  --link-visited: #b79bec;
+  --status-draft-bg: #3a2f11;
+  --status-draft-fg: #f2c464;
+  --status-review-bg: #16273f;
+  --status-review-fg: #8fb8ff;
+  --status-current-bg: #0f2c22;
+  --status-current-fg: #6fd9ae;
+  --status-stale-bg: #3a1414;
+  --status-stale-fg: #f29b9b;
+  --code-bg: #21252c;
+  --callout-important-bg: #201c47;
+  --callout-important-fg: #b4beff;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 16px/1.6 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.page-header,
+main,
+footer {
+  max-width: 70ch;
+  margin: 0 auto;
+  padding-inline: 1.25rem;
+}
+
+/* Build-identity banner (Task 1): present on every page of a restricted build, absent everywhere
+   else — its absence is the signal, so this rule must never leak into the shared bytes both builds
+   copy from this same file as anything but styling for an element the other build simply never
+   emits. Kept loud (high-contrast, sticky) because the leak this exists to prevent is someone
+   printing a page to PDF without noticing what it says. */
+.notice-banner {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: #b91c1c;
+  color: #fff;
+  font-weight: 700;
+  text-align: center;
+  padding: 0.6rem 1rem;
+}
+
+/* Persistent section nav (Task 5): plain links to each section's landing page, laid out as a
+   horizontal strip directly under the banner (or page top, when there is none). Wraps rather than
+   scrolls at narrow widths so it never forces the page itself to scroll horizontally. */
+.section-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 1.25rem;
+  padding: 0.85rem 1.25rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-raised);
+}
+
+.section-nav a {
+  text-decoration: none;
+  color: var(--fg-muted);
+  font-size: 0.95rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.section-nav a:hover {
+  color: var(--fg);
+}
+
+.section-nav a[aria-current='page'] {
+  color: var(--link);
+  text-decoration: underline;
+  text-underline-offset: 0.25em;
+}
+
+/* A nested tab bar (Task 6: one per directory level below the top): visually one step quieter and
+   tighter than the persistent top-level bar it stacks under, without a second border doubling up. */
+.section-nav.sub-nav {
+  padding-block: 0.6rem;
+  border-bottom: none;
+  border-top: 1px solid var(--border);
+}
+
+/* The document count on a tab (Task 6: `Meetings 12`) — a quiet badge, never competing with the
+   label itself for attention. */
+.tab-count {
+  font-weight: 400;
+  font-size: 0.85em;
+  color: var(--fg-muted);
+}
+
+.section-nav a[aria-current='page'] .tab-count {
+  color: inherit;
+}
+
+.page-header {
+  padding-block: 2rem 1rem;
+}
+
+main {
+  padding-block: 0.5rem 3rem;
+}
+
+.breadcrumb {
+  margin: 0 0 1rem;
+}
+
+.breadcrumb a {
+  font-size: 0.9rem;
+  color: var(--fg-muted);
+  text-decoration: none;
+}
+
+.breadcrumb a:hover {
+  color: var(--link);
+}
+
+h1 {
+  font-size: 1.9rem;
+  line-height: 1.25;
+  margin: 0 0 0.5rem;
+}
+
+h2 {
+  font-size: 1.4rem;
+  margin-top: 2.25rem;
+}
+
+h3 {
+  font-size: 1.15rem;
+  margin-top: 1.75rem;
+}
+
+.summary {
+  color: var(--fg-muted);
+  font-size: 1.05rem;
+  margin: 0 0 0.75rem;
+}
+
+a {
+  color: var(--link);
+}
+
+a:visited {
+  color: var(--link-visited);
+}
+
+p,
+ul,
+ol {
+  overflow-wrap: break-word;
+}
+
+code {
+  background: var(--code-bg);
+  padding: 0.15em 0.4em;
+  border-radius: 4px;
+  font-size: 0.9em;
+}
+
+pre {
+  background: var(--code-bg);
+  padding: 1rem;
+  border-radius: 8px;
+  overflow-x: auto;
+}
+
+pre code {
+  background: none;
+  padding: 0;
+}
+
+blockquote {
+  margin: 1rem 0;
+  padding: 0.25rem 1rem;
+  border-left: 3px solid var(--border);
+  color: var(--fg-muted);
+}
+
+/* GitHub-style `> [!NOTE]` alerts, rendered as callouts by the site emitter. */
+.callout {
+  margin: 1.25rem 0;
+  padding: 0.75rem 1rem;
+  border-left: 4px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-raised);
+}
+
+.callout > *:first-child {
+  margin-top: 0;
+}
+
+.callout > *:last-child {
+  margin-bottom: 0;
+}
+
+.callout-label {
+  font-weight: 700;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  margin: 0 0 0.35rem;
+}
+
+.callout-note {
+  background: var(--status-review-bg);
+  border-left-color: var(--status-review-fg);
+}
+
+.callout-note .callout-label {
+  color: var(--status-review-fg);
+}
+
+.callout-tip {
+  background: var(--status-current-bg);
+  border-left-color: var(--status-current-fg);
+}
+
+.callout-tip .callout-label {
+  color: var(--status-current-fg);
+}
+
+.callout-important {
+  background: var(--callout-important-bg);
+  border-left-color: var(--callout-important-fg);
+}
+
+.callout-important .callout-label {
+  color: var(--callout-important-fg);
+}
+
+.callout-warning {
+  background: var(--status-draft-bg);
+  border-left-color: var(--status-draft-fg);
+}
+
+.callout-warning .callout-label {
+  color: var(--status-draft-fg);
+}
+
+.callout-caution {
+  background: var(--status-stale-bg);
+  border-left-color: var(--status-stale-fg);
+}
+
+.callout-caution .callout-label {
+  color: var(--status-stale-fg);
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  display: block;
+  overflow-x: auto;
+}
+
+th,
+td {
+  border: 1px solid var(--border);
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+}
+
+img {
+  max-width: 100%;
+}
+
+.status {
+  display: inline-block;
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 0.15rem 0.6rem;
+  border-radius: 999px;
+  text-transform: capitalize;
+}
+
+.status-draft {
+  background: var(--status-draft-bg);
+  color: var(--status-draft-fg);
+}
+
+.status-review {
+  background: var(--status-review-bg);
+  color: var(--status-review-fg);
+}
+
+.status-current {
+  background: var(--status-current-bg);
+  color: var(--status-current-fg);
+}
+
+.status-stale {
+  background: var(--status-stale-bg);
+  color: var(--status-stale-fg);
+}
+
+/* Diagrams are ~800KB self-contained artifacts: give them room and never
+   let several of them force the page to fetch all of them up front — that
+   discipline lives in the `loading="lazy"` on the <iframe> itself. */
+/* Breaks out of the ~70ch prose column to a wider, still-centred bound so a
+   wide architecture diagram isn't clipped at the column edge. `main` is
+   centred via `margin: 0 auto`, so its horizontal centre coincides with the
+   viewport's — the standard full-bleed calc trick applies unchanged for a
+   bound narrower than 100vw. */
+figure.diagram {
+  margin-block: 2rem;
+  padding: 0;
+  width: min(96rem, 94vw);
+  margin-left: calc(50% - min(48rem, 47vw));
+  margin-right: calc(50% - min(48rem, 47vw));
+}
+
+figure.diagram iframe {
+  width: 100%;
+  height: 32rem;
+  max-height: 70vh;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-raised);
+  display: block;
+}
+
+figure.asset {
+  margin: 1.5rem 0;
+}
+
+figure.asset img {
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  display: block;
+}
+
+figcaption {
+  margin-top: 0.5rem;
+  color: var(--fg-muted);
+  font-size: 0.9rem;
+}
+
+figure.sheet {
+  margin: 1.5rem 0;
+}
+
+figure.sheet .sheet-table {
+  margin-top: 0.5rem;
+}
+
+.sheet-stale {
+  margin: 0.5rem 0;
+  padding: 0.5rem 0.75rem;
+  background: var(--status-draft-bg);
+  color: var(--status-draft-fg);
+  border-radius: 6px;
+  font-weight: 600;
+}
+
+.sheet-meta {
+  margin-top: 0.5rem;
+  color: var(--fg-muted);
+  font-size: 0.9rem;
+}
+
+/* Index page */
+.doc-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.doc-entry {
+  padding: 1rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.doc-entry:first-child {
+  border-top: 1px solid var(--border);
+}
+
+.doc-entry a {
+  font-size: 1.1rem;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.doc-entry a:hover {
+  text-decoration: underline;
+}
+
+.doc-entry p {
+  margin: 0.35rem 0 0;
+  color: var(--fg-muted);
+}
+
+@media (max-width: 480px) {
+  h1 {
+    font-size: 1.5rem;
+  }
+
+  figure.diagram iframe {
+    height: 20rem;
+  }
+
+  .section-nav {
+    gap: 0.35rem 0.85rem;
+    padding: 0.75rem 1rem;
+  }
+}
+
+/* The realistic way a restricted build leaks is someone printing a page to PDF and sending that —
+   so the banner must survive `@media print` rather than vanish the way `position: sticky` and
+   background colors often do by default in a browser's print stylesheet. */
+@media print {
+  .notice-banner {
+    position: static;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+}

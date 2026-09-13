@@ -1,0 +1,131 @@
+# Deploying
+
+This is what you need on your first day: two Vercel projects, from one repository, built from
+one `docs/` tree — one internal, one for the client. Do this once per engagement.
+
+## Why two projects, not one
+
+Vercel's Deployment Protection is configured **per project and per environment — never per
+path.** There is no supported way to have one deployment where, say, `/03-management/*` is
+protected and `/04-technical/*` is public. Routing Middleware does not help either —
+protection applies to middleware requests too.
+
+So the split happens at build time instead: contrail filters documents by `audience` before
+either build ever runs, and the result is two separate Vercel projects pointed at the same
+repository.
+
+| | Internal project | Client project |
+|---|---|---|
+| Build command | `contrail site --out dist` | `contrail site --out dist --audience client` |
+| Contains | every document | only `audience: client` documents |
+| Protection | Vercel Authentication, **All Deployments** scope | none |
+| Who reads it | the team | the client |
+
+**Do not "simplify" this into one deployment with path rules later.** It is tempting —
+one project is less setup than two — but Vercel cannot do it (protection is per-project, not
+per-path, see above), and even if a future version of Vercel could, it would put the internal
+build's margin figures and the client-facing site on the same host, one misconfigured rule
+away from both being reachable at once. The failure this design prevents is a client reading
+a budget line that was never meant to leave the team: two projects make that leak physically
+impossible — the client project never contains the internal material in the first place — a
+single project with a protection rule only makes it *unlikely*, and unlikely is not the bar
+for a client's commercial data.
+
+## Setting up the internal project
+
+1. In Vercel, **Add New… → Project**, import this repository.
+2. Set the **Build Command** to `contrail site --out dist` (or your framework preset's
+   equivalent, with that as the build step) and the **Output Directory** to `dist`.
+3. Deploy once so the project exists, then go to **Settings → Deployment Protection**.
+4. Enable **Vercel Authentication**, scope set to **All Deployments** (not just previews —
+   the whole point is that production is protected too). A viewer needs a Vercel account with
+   access to this team; nobody else gets past the login wall.
+5. Name the project something that will not be confused with the client one — e.g.
+   `<client>-internal`. You will put this exact name in `contrail.config.ts` as
+   `vercel.internalProject` (see below).
+
+## Setting up the client project
+
+1. **Add New… → Project** again, same repository, but a **second, separate** Vercel project.
+2. Set the **Build Command** to `contrail site --out dist --audience client`.
+3. Leave **Deployment Protection** off. This is deliberate, not an oversight — see the next
+   section for why.
+4. Name it `<client>-client` (or similar) and record it as `vercel.clientProject`.
+
+## Why the client project needs no password
+
+contrail filters documents at build time. `--audience client` means only documents explicitly
+marked `audience: client` are ever read, rendered, or written to `dist/` — a document that
+isn't marked for the client does not exist as far as that build is concerned. The client
+deployment does not *contain* internal material, so there is nothing on that host to protect.
+Absence is a stronger guarantee than access control, and it is free: a password on a bundle
+that contains the secret is one misconfiguration (a wrong scope, an expired session, a
+forwarded link) away from a leak. A bundle that never received the secret cannot leak it no
+matter what happens to the password.
+
+If the client's own security policy requires a login on their own site regardless, you can
+still add **Password Protection** to the client project. Know the cost before you turn it on:
+Password Protection is available on **Enterprise**, or on **Pro plus a $150/month add-on**
+(the add-on unlocks the full Advanced Deployment Protection tier — Password Protection,
+Trusted IPs, and SSO/Passport). Budget for that explicitly if you want it; it is a business
+decision about the client relationship, not a security requirement contrail's design leaves
+unmet.
+
+## Configuring `contrail.config.ts`
+
+```ts
+export default {
+  // ...
+  vercel: {
+    internalProject: 'meridian-internal', // exact Vercel project name from step 5 above
+    clientProject: 'meridian-client',
+  },
+  site: {
+    host: 'vercel',
+    internalUrl: 'https://meridian-internal.vercel.app',
+    clientUrl: 'https://meridian-client.vercel.app',
+  },
+}
+```
+
+`vercel.internalProject`/`vercel.clientProject` are what `contrail deploy` checks against the
+project actually linked in this directory — see the guard below.
+
+## `contrail deploy`
+
+```
+contrail deploy [--audience client|internal] [--prod] [--dry-run] [--yes]
+```
+
+Builds the site for the chosen audience (`internal` is the default — everything), then shells
+out to `vercel deploy --prebuilt` against the built directory. contrail never reads, stores,
+or logs a Vercel token: the Vercel CLI owns authentication entirely, and its own prompts and
+output pass straight through to your terminal.
+
+Before every deploy, the CLI must already be linked to a Vercel project in this directory
+(`vercel link`, once, per audience/checkout). Two guards run before anything is published:
+
+1. **Wrong-project guard.** contrail compares the project linked in `.vercel/project.json`
+   against `vercel.internalProject`/`vercel.clientProject` for the audience you asked for. A
+   mismatch aborts immediately and names both the expected and the actual project — publishing
+   an internal build to the client project is the single worst thing this tool could do, and
+   it is one mistyped flag or one stale `vercel link` away without this check.
+2. **Client production confirmation.** `--prod --audience client` prints the document count
+   and every title it is about to publish, then asks you to confirm — unless you pass `--yes`.
+   A client may read the page the moment it lands; there is no meaningful undo.
+
+`--dry-run` prints the `vercel` command it would run and the file count, and deploys nothing.
+
+Typical first deploy of each project:
+
+```bash
+# once, per checkout, per project
+vercel link   # link to the internal project, or the client project — do this in two checkouts,
+              # or re-run `vercel link` before each deploy if you use one
+
+# internal
+contrail deploy --audience internal --prod
+
+# client — asks for confirmation unless you pass --yes
+contrail deploy --audience client --prod
+```
