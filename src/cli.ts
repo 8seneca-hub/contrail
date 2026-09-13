@@ -7,6 +7,7 @@ import { findConfigPath, loadConfig, readProjectMeta } from './config.js'
 import { contextEmptyMessage, contextQuery, contextRule, isTaskType, TASK_TYPES, type TaskType } from './context.js'
 import { defaultCliRunner, deploy, parseDeployAudience, parseDeployTarget } from './deploy.js'
 import { createRailwayTransport } from './deploy/railway.js'
+import { createPlaneDocsTransport } from './deploy/plane-docs.js'
 import type { DeployTransport } from './deploy/transport.js'
 import { buildSite, docsForAudience, pageFileFor } from './emit/site.js'
 import { loadLock, saveLock } from './lock.js'
@@ -247,7 +248,7 @@ export async function main(argv: string[]): Promise<number> {
         'publish [--dry-run] [--force] [--only <substring>] [--audience client] | ' +
         'site [--out <dir>] [--audience client] | check [--strict] [--index] [--audience client] [--json] | ' +
         'scaffold <docKind> <path> [--json] | sheet pull <doc> | sheet push <doc> [--force] | ' +
-        'deploy [--audience client|internal] [--target vercel|railway] [--prod] [--dry-run] [--yes] | ' +
+        'deploy [--audience client|internal] [--target vercel|plane|railway] [--prod] [--dry-run] [--yes] | ' +
         `context [--task <${TASK_TYPES.join('|')}>] [keywords...] [--audience client] [--json] [--limit <n>]`,
     )
     return 0
@@ -306,12 +307,23 @@ export async function main(argv: string[]): Promise<number> {
     const config = loadConfig(findConfigPath(process.cwd()))
     const allDocs = findDocs(config).map((path) => parseDoc(path, config.root))
 
-    // Only 'railway' needs a transport — `deploy()` itself reports the actionable config error when
-    // `deployTarget` is 'railway' but `config.selfhost` is absent.
-    const transport: DeployTransport | undefined =
-      deployTarget === 'railway' && config.selfhost
-        ? createRailwayTransport(defaultCliRunner, { volume: config.selfhost.volume, service: config.selfhost.service })
-        : undefined
+    // Only the self-hosted targets need a transport, and each one is built from the matching
+    // `selfhost` config. `deploy()` itself reports the actionable error when the config is absent
+    // or names the other target, so nothing here has to explain a mismatch.
+    let transport: DeployTransport | undefined
+    if (config.selfhost?.target === 'railway' && deployTarget === 'railway') {
+      transport = createRailwayTransport(defaultCliRunner, {
+        volume: config.selfhost.volume,
+        service: config.selfhost.service,
+      })
+    } else if (config.selfhost?.target === 'plane' && deployTarget === 'plane') {
+      transport = createPlaneDocsTransport({
+        baseUrl: config.plane.baseUrl,
+        workspace: config.plane.workspace,
+        projectId: config.selfhost.projectId,
+        apiKey: requireApiKey(),
+      })
+    }
 
     try {
       const result = await deploy({

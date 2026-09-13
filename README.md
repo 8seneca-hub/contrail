@@ -4,7 +4,7 @@ Write project documentation once, in Markdown. contrail publishes it as a static
 with validated, interactive diagrams — and as `llms.txt` plus the source Markdown for coding agents,
 while keeping internal material out of anything a client can see.
 
-> **Status (2026-09-13):** M1 through M4 implemented. 485 tests pass, 1 skipped (the live Plane
+> **Status (2026-09-13):** M1 through M4 implemented. 520 tests pass, 1 skipped (the live Plane
 > integration test). `npm run typecheck` and `npm run build` are clean. Live verification against a
 > real Google Sheet and a real Plane instance has **not** been run — see "What has not been verified".
 
@@ -88,7 +88,22 @@ Installing `plugin/` adds the `contrail-docs` skill, which fires both on documen
 questions that need project context ("is this in scope?", "why did we decide that?"), plus
 `/docs-context`, `/docs-new`, `/docs-check` and `/docs-site`.
 
-## Why Plane is dormant
+## Hosting the site inside Plane
+
+`contrail deploy --target plane` uploads a build to a self-hosted Plane instance, which serves it
+behind **its own project membership check** and renders it in the project's Docs tab. That check is
+the reason to prefer it: a proxy-level gate can only ask whether the visitor is logged in, which
+hands everyone in the workspace every project's documents.
+
+The Plane side of this — an upload endpoint, a path-prefixed serving endpoint, and the Docs tab — is
+about 200 lines in the fork and is specified in
+[`docs/plane-docs-api-spec.md`](docs/plane-docs-api-spec.md). Until those endpoints exist, `--target
+plane` has nothing to talk to; the Vercel path and the Railway volume path both still work.
+
+Each deploy uploads to a fresh build prefix and commits it only once every file has landed, so an
+interrupted upload leaves the live site untouched rather than serving a half-updated one.
+
+## Why Plane *pages* are dormant
 
 contrail began as a Plane Pages publisher. Live verification found that **Plane Community v1.4.0 does
 not expose the Pages API** — `404` on both the workspace and project paths, while `/projects/` returns

@@ -119,7 +119,26 @@ describe('loadConfig', () => {
     expect(cfg.selfhost?.slug).toBe('meridian')
   })
 
-  it('rejects a selfhost.target that is not railway', () => {
+  it('accepts a plane selfhost config, which needs only a projectId', () => {
+    const root = workspace(JSON.stringify({
+      plane: { baseUrl: 'https://plane.example.com', workspace: 'acme' },
+      docs: ['./docs/**/*.md'],
+      selfhost: { target: 'plane', projectId: 'proj-123' },
+    }))
+    const cfg = loadConfig(join(root, 'contrail.config.json'))
+    expect(cfg.selfhost).toEqual({ target: 'plane', projectId: 'proj-123' })
+  })
+
+  it('rejects a plane selfhost config with no projectId', () => {
+    const root = workspace(JSON.stringify({
+      plane: { baseUrl: 'https://plane.example.com', workspace: 'acme' },
+      docs: ['./docs/**/*.md'],
+      selfhost: { target: 'plane' },
+    }))
+    expect(() => loadConfig(join(root, 'contrail.config.json'))).toThrow(/selfhost\.projectId.*non-empty string/)
+  })
+
+  it('rejects a selfhost.target that is neither plane nor railway', () => {
     const root = workspace(JSON.stringify({
       plane: { baseUrl: 'https://plane.example.com', workspace: 'acme' },
       docs: ['./docs/**/*.md'],
@@ -131,7 +150,7 @@ describe('loadConfig', () => {
         clientPath: '/srv/contrail/client',
       },
     }))
-    expect(() => loadConfig(join(root, 'contrail.config.json'))).toThrow(/selfhost\.target.*must be 'railway'/)
+    expect(() => loadConfig(join(root, 'contrail.config.json'))).toThrow(/selfhost\.target.*must be 'plane' or 'railway'/)
   })
 
   it('rejects a selfhost config missing a required string field', () => {

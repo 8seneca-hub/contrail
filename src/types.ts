@@ -82,21 +82,37 @@ export interface Config {
    * over `credentialsPath` when both are set — see `src/sheets/client.ts:credentialsPathFor`. */
   sheets?: { credentialsPath?: string }
   /**
-   * `contrail deploy --target railway`'s destination: an internal build lands at
-   * `<internalPath>/<slug>`, a client build at `<clientPath>/<slug>`. `railway` is the only
-   * supported target today — see the note on `DeployTransport` in `src/deploy/transport.ts` for
-   * why the transport is pluggable rather than hard-coded to it.
+   * Where a self-hosted deploy sends the build. Two targets, and the difference between them is
+   * who can read the result:
+   *
+   * - `plane` uploads to the Plane instance itself, which serves the site behind **its own
+   *   per-project membership check** (`docs/plane-docs-api-spec.md`). Preferred: a person on one
+   *   project cannot read another project's documents.
+   * - `railway` writes to a volume served by Caddy, gated by "is this visitor logged into Plane" —
+   *   which is all-or-nothing across every project.
+   *
+   * See the note on `DeployTransport` in `src/deploy/transport.ts` for why the transport is
+   * pluggable rather than hard-coded.
    */
-  selfhost?: {
-    target: 'railway'
-    volume: string
-    service?: string
-    /** Per-project subdirectory. Must match `^[a-z0-9][a-z0-9-]*$` — it becomes a path segment,
-     * so it must not be able to escape via `..` or a leading `/`. */
-    slug: string
-    internalPath: string
-    clientPath: string
-  }
+  selfhost?: SelfhostPlane | SelfhostRailway
+}
+
+export interface SelfhostPlane {
+  target: 'plane'
+  /** The Plane project whose Docs tab serves this build. Access follows membership of it.
+   * `plane.baseUrl` and `plane.workspace` supply the rest of the address. */
+  projectId: string
+}
+
+export interface SelfhostRailway {
+  target: 'railway'
+  volume: string
+  service?: string
+  /** Per-project subdirectory. Must match `^[a-z0-9][a-z0-9-]*$` — it becomes a path segment,
+   * so it must not be able to escape via `..` or a leading `/`. */
+  slug: string
+  internalPath: string
+  clientPath: string
 }
 
 export interface RenderedDiagram {

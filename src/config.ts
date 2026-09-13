@@ -106,15 +106,21 @@ export function loadConfig(configPath: string): Config {
     if (typeof raw.selfhost !== 'object' || raw.selfhost === null) {
       throw new ConfigError(`${configPath}: \`selfhost\` must be an object.`)
     }
-    if (raw.selfhost.target !== 'railway') {
-      throw new ConfigError(`${configPath}: \`selfhost.target\` must be 'railway'.`)
+    if (raw.selfhost.target !== 'railway' && raw.selfhost.target !== 'plane') {
+      throw new ConfigError(`${configPath}: \`selfhost.target\` must be 'plane' or 'railway'.`)
     }
-    for (const key of ['volume', 'slug', 'internalPath', 'clientPath'] as const) {
-      if (typeof raw.selfhost[key] !== 'string' || raw.selfhost[key].length === 0) {
+    const fields = raw.selfhost as unknown as Record<string, unknown>
+    const required =
+      raw.selfhost.target === 'plane'
+        ? ['projectId']
+        : ['volume', 'slug', 'internalPath', 'clientPath']
+    for (const key of required) {
+      const value = fields[key]
+      if (typeof value !== 'string' || value.length === 0) {
         throw new ConfigError(`${configPath}: \`selfhost.${key}\` must be a non-empty string.`)
       }
     }
-    if (raw.selfhost.service !== undefined && typeof raw.selfhost.service !== 'string') {
+    if (raw.selfhost.target === 'railway' && raw.selfhost.service !== undefined && typeof raw.selfhost.service !== 'string') {
       throw new ConfigError(`${configPath}: \`selfhost.service\` must be a string.`)
     }
   }

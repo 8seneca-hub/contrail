@@ -1,0 +1,180 @@
+import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { join, relative, sep } from 'node:path'
+import { DeployError } from '../deploy.js'
+import type { DeployTransport } from './transport.js'
+
+/**
+ * Uploads a built site to a self-hosted Plane instance, which then serves it behind its own
+ * project membership check and renders it in a Docs tab. The protocol is specified in
+ * `docs/plane-docs-api-spec.md`; this module is the client half of it.
+ *
+ * Why this exists alongside `railway.ts`: a Railway volume behind Caddy is all-or-nothing — anyone
+ * logged into Plane reaches every project's documents, including other clients' budgets. Plane's
+ * own endpoint can check membership per project, which is the only place that boundary can be
+ * drawn correctly.
+ *
+ * Three steps, in order, and the order is the point:
+ *   1. POST the manifest, receive one presigned upload per file
+ *   2. POST the bytes straight to object storage (presigned multipart form)
+ *   3. POST commit, which flips the pointer to this build
+ *
+ * Until step 3 the previous build is what readers see. A half-finished upload therefore serves
+ * nobody a half-finished site.
+ */
+
+const CONTENT_TYPES: Record<string, string> = {
+  '.html': 'text/html',
+  '.css': 'text/css',
+  '.js': 'text/javascript',
+  '.json': 'application/json',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.woff2': 'font/woff2',
+  '.md': 'text/markdown',
+  '.txt': 'text/plain',
+}
+
+function contentTypeFor(path: string): string {
+  const dot = path.lastIndexOf('.')
+  return (dot === -1 ? undefined : CONTENT_TYPES[path.slice(dot).toLowerCase()]) ?? 'application/octet-stream'
+}
+
+export interface DocsFile {
+  /** POSIX-separated path relative to the build directory — the path the site is served at. */
+  path: string
+  size: number
+  type: string
+}
+
+/** Every file under `dir`, as the manifest describes them. Paths are POSIX-separated regardless of
+ * platform: they become URL paths on the server, where a backslash is a character, not a
+ * separator. */
+export function collectDocsFiles(dir: string, base = dir): DocsFile[] {
+  const files: DocsFile[] = []
+  for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+    const abs = join(dir, entry.name)
+    if (entry.isDirectory()) {
+      files.push(...collectDocsFiles(abs, base))
+      continue
+    }
+    const path = relative(base, abs).split(sep).join('/')
+    files.push({ path, size: statSync(abs).size, type: contentTypeFor(path) })
+  }
+  return files
+}
+
+export interface PresignedUpload {
+  path: string
+  upload_data: { url: string; fields: Record<string, string> }
+}
+
+export interface PlaneDocsTransportOptions {
+  /** Plane's base URL, e.g. `https://projects.8seneca.com`. */
+  baseUrl: string
+  /** Workspace slug. */
+  workspace: string
+  /** The project whose Docs tab this build belongs to. Access follows membership of this project. */
+  projectId: string
+  /** Read from `PLANE_API_KEY` by the CLI — never from a config file. */
+  apiKey: string
+  fetchFn?: typeof fetch
+  /** Injected in tests so the manifest and the reported build are deterministic. */
+  buildId?: string
+  /** Files uploaded at once. Sequential uploads are slow for the 800KB diagram bundles; the
+   * server does no work per file, so the ceiling here is the network. */
+  concurrency?: number
+}
+
+function newBuildId(): string {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').replace(/Z$/, 'Z')
+  return `${stamp}-${Math.random().toString(16).slice(2, 8)}`
+}
+
+/**
+ * `remotePath` carries the audience (`'internal'` or `'client'`) — for this target there is no
+ * filesystem path, because the server owns the layout. `deploy.ts` computes it; see
+ * `remotePathFor`.
+ */
+export function createPlaneDocsTransport(opts: PlaneDocsTransportOptions): DeployTransport {
+  const baseUrl = opts.baseUrl.replace(/\/+$/, '')
+  const fetchFn = opts.fetchFn ?? fetch
+  const concurrency = opts.concurrency ?? 8
+
+  const endpoint = (suffix: string): string =>
+    `${baseUrl}/api/v1/workspaces/${opts.workspace}/projects/${opts.projectId}/docs/${suffix}`
+
+  async function postJson(suffix: string, body: unknown): Promise<unknown> {
+    const response = await fetchFn(endpoint(suffix), {
+      method: 'POST',
+      headers: { 'X-API-Key': opts.apiKey, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    const text = await response.text()
+    if (!response.ok) {
+      throw new DeployError(`Plane POST docs/${suffix} failed with ${response.status}: ${text.slice(0, 300)}`)
+    }
+    return text ? JSON.parse(text) : {}
+  }
+
+  return {
+    name: 'plane',
+    async push(localDir, remotePath, pushOpts) {
+      const audience = remotePath
+      const files = collectDocsFiles(localDir)
+      const bytes = files.reduce((total, file) => total + file.size, 0)
+      const buildId = opts.buildId ?? newBuildId()
+
+      if (pushOpts.dryRun) {
+        console.log(`Would upload ${files.length} file(s), ${bytes} byte(s) from ${localDir}`)
+        console.log(`Would POST ${endpoint('uploads/')} (audience ${audience}, build ${buildId})`)
+        console.log(`Would POST ${endpoint('commit/')} to make that build live`)
+        return { filesSent: files.length, bytes }
+      }
+
+      const manifest = (await postJson('uploads/', { build_id: buildId, audience, files })) as {
+        uploads?: PresignedUpload[]
+      }
+      const uploads = manifest.uploads ?? []
+
+      // A missing presigned entry means that file would silently never exist on the server, and
+      // the commit below would then make a build live with a hole in it. Fail before the commit.
+      const missing = files.filter((file) => !uploads.some((upload) => upload.path === file.path))
+      if (missing.length > 0) {
+        throw new DeployError(
+          `Plane returned no upload URL for ${missing.length} file(s), first: ${missing[0]?.path}. ` +
+            'Nothing was committed; the previous build is still live.',
+        )
+      }
+
+      for (let index = 0; index < uploads.length; index += concurrency) {
+        await Promise.all(
+          uploads.slice(index, index + concurrency).map(async (upload) => {
+            const form = new FormData()
+            for (const [key, value] of Object.entries(upload.upload_data.fields)) form.append(key, value)
+            const body = readFileSync(join(localDir, ...upload.path.split('/')))
+            form.append(
+              'file',
+              new Blob([body as unknown as BlobPart], { type: contentTypeFor(upload.path) }),
+              upload.path,
+            )
+
+            // Deliberately no API key: object storage is a different trust boundary.
+            const response = await fetchFn(upload.upload_data.url, { method: 'POST', body: form })
+            if (!response.ok) {
+              throw new DeployError(
+                `Upload of ${upload.path} failed with ${response.status}. Nothing was committed; ` +
+                  'the previous build is still live.',
+              )
+            }
+          }),
+        )
+      }
+
+      await postJson('commit/', { build_id: buildId, audience })
+      return { filesSent: files.length, bytes }
+    },
+  }
+}

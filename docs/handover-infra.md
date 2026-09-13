@@ -4,6 +4,12 @@
 **From:** the contrail build. Written 2026-09-13.
 **Time to complete:** roughly an hour, most of it waiting for a deploy.
 
+> **Superseded, 2026-09-13.** The recommended path is now
+> [`plane-docs-api-spec.md`](plane-docs-api-spec.md): Plane itself stores and serves the docs, so
+> access follows **project membership** instead of "is this visitor logged into Plane". The Caddy
+> design below gives everyone in the workspace every project's documents, including other clients'
+> budgets. Keep this document only if the Plane endpoints are not going to be built.
+
 You are being asked to serve two static directories and put authentication in front of one of them.
 Nothing here changes Plane's application code — the only change to the fork is two blocks in the Caddy
 config.

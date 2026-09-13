@@ -49,10 +49,11 @@ function fakeTransport(): { transport: DeployTransport; calls: Array<[string, st
 }
 
 describe('parseDeployTarget', () => {
-  it('defaults to vercel, accepts railway, and rejects anything else', () => {
+  it('defaults to vercel, accepts plane and railway, and rejects anything else', () => {
     expect(parseDeployTarget(undefined)).toBe('vercel')
     expect(parseDeployTarget('vercel')).toBe('vercel')
     expect(parseDeployTarget('railway')).toBe('railway')
+    expect(parseDeployTarget('plane')).toBe('plane')
     expect(() => parseDeployTarget('ssh')).toThrow(/Unknown --target/)
   })
 })
@@ -225,5 +226,75 @@ describe('contrail deploy --target railway', () => {
     expect(result.status).toBe('deployed')
     expect(calls).toHaveLength(1)
     expect(calls[0]![0]).toBe('vercel')
+  })
+
+  // --target plane: the server owns the layout, so the only thing the transport is told is which
+  // audience this build is. See docs/plane-docs-api-spec.md.
+  it('passes the audience as the remote path for --target plane, and builds per audience', async () => {
+    const root = fixtureRoot()
+    const internal = writeDoc(root, 'docs/03-management/budget.md')
+    const shared = writeDoc(root, 'docs/01-overview/brief.md', 'audience: client\n')
+    const config = configFor(root, { target: 'plane', projectId: 'proj-123' })
+    const { transport, calls } = fakeTransport()
+
+    const result = await deploy({
+      config,
+      docs: [internal, shared],
+      audience: 'client',
+      target: 'plane',
+      transport,
+      runner: async () => ({ code: 0 }),
+    })
+
+    expect(calls[0]![1]).toBe('client')
+    expect(result.remotePath).toBe('client')
+    expect(result.docCount).toBe(1)
+  })
+
+  it('aborts when --target disagrees with the configured selfhost target', async () => {
+    const root = fixtureRoot()
+    const doc = writeDoc(root, 'docs/01-overview/brief.md')
+    const { transport } = fakeTransport()
+
+    await expect(
+      deploy({
+        config: configFor(root, SELFHOST),
+        docs: [doc],
+        audience: 'internal',
+        target: 'plane',
+        transport,
+        runner: async () => ({ code: 0 }),
+      }),
+    ).rejects.toThrow(/--target plane.*selfhost\.target: 'railway'/s)
+  })
+
+  it('aborts with no `selfhost` configured, naming --target plane and the plane config shape', async () => {
+    const root = fixtureRoot()
+    const doc = writeDoc(root, 'docs/01-overview/brief.md')
+
+    await expect(
+      deploy({
+        config: configFor(root),
+        docs: [doc],
+        audience: 'internal',
+        target: 'plane',
+        runner: async () => ({ code: 0 }),
+      }),
+    ).rejects.toThrow(/--target plane.*projectId/s)
+  })
+
+  it('requires a transport for --target plane, naming the plane one', async () => {
+    const root = fixtureRoot()
+    const doc = writeDoc(root, 'docs/01-overview/brief.md')
+
+    await expect(
+      deploy({
+        config: configFor(root, { target: 'plane', projectId: 'proj-123' }),
+        docs: [doc],
+        audience: 'internal',
+        target: 'plane',
+        runner: async () => ({ code: 0 }),
+      }),
+    ).rejects.toThrow(/createPlaneDocsTransport/)
   })
 })

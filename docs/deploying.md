@@ -129,3 +129,43 @@ contrail deploy --audience internal --prod
 # client — asks for confirmation unless you pass --yes
 contrail deploy --audience client --prod
 ```
+
+## Deploying into Plane instead of Vercel
+
+`--target plane` uploads the built site to a self-hosted Plane instance, which serves it behind its
+own project membership check and shows it in the project's Docs tab. The protocol is specified in
+[`plane-docs-api-spec.md`](plane-docs-api-spec.md), which is also the document to hand to whoever
+works on the Plane fork.
+
+Prefer this over any proxy-level gate. Caddy — or anything else in front of Plane — can only ask "is
+this visitor logged in", which grants everyone in the workspace every project's documents, including
+other clients' budgets. Only Plane knows who is on which project.
+
+```ts
+// contrail.config.ts
+selfhost: { target: 'plane', projectId: '<the project UUID>' }
+```
+
+`plane.baseUrl` and `plane.workspace` supply the rest of the address; `PLANE_API_KEY` must be
+exported and is never read from config.
+
+```bash
+contrail deploy --target plane --audience internal --dry-run   # prints the manifest, uploads nothing
+contrail deploy --target plane --audience internal
+```
+
+Each deploy uploads to a fresh build prefix and then commits it. Until the commit lands, readers see
+the previous build — so a failed or interrupted upload leaves the live site alone rather than
+serving a half-updated one. If Plane presigns fewer files than the manifest listed, or any upload
+fails, contrail aborts **before** committing and says so.
+
+Client documents are a separate decision: Plane members are the team, not the client. Either the
+Plane side grows a share token for the `client` build, or client docs stay on Vercel as described
+above.
+
+### The Railway volume target
+
+`--target railway` predates the Plane API and remains implemented
+(`selfhost: { target: 'railway', volume, slug, internalPath, clientPath }`). Use it only where the
+Plane endpoints do not exist: it needs a separate authentication gate in the proxy, and that gate
+cannot distinguish one project from another.

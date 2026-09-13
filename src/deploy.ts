@@ -5,14 +5,22 @@ import { buildSite, docsForAudience } from './emit/site.js'
 import type { DeployTransport } from './deploy/transport.js'
 import type { Audience, Config, Doc } from './types.js'
 
-export type DeployTarget = 'vercel' | 'railway'
+export type DeployTarget = 'vercel' | 'railway' | 'plane'
 
 /** `contrail deploy`'s `--target` flag. Defaults to `vercel`, the original (and still unchanged)
- * deploy path — `railway` opts into the self-hosted path below. */
+ * deploy path; `plane` and `railway` both take the self-hosted path below. `plane` is the
+ * recommended self-hosted target — it is the only one where access follows project membership. */
 export function parseDeployTarget(value: string | undefined): DeployTarget {
   if (value === undefined || value === 'vercel') return 'vercel'
   if (value === 'railway') return 'railway'
-  throw new Error(`Unknown --target '${value}'. Must be 'vercel' or 'railway'.`)
+  if (value === 'plane') return 'plane'
+  throw new Error(`Unknown --target '${value}'. Must be 'vercel', 'plane' or 'railway'.`)
+}
+
+/** The two targets that push a built directory through a `DeployTransport` rather than shelling
+ * out to the Vercel CLI. */
+export function isSelfhostTarget(target: DeployTarget): target is 'railway' | 'plane' {
+  return target === 'railway' || target === 'plane'
 }
 
 /** `contrail deploy`'s own audience flag accepts `internal` explicitly (unlike `site`/`check`/
@@ -112,15 +120,25 @@ const SLUG_PATTERN = /^[a-z0-9][a-z0-9-]*$/
  * Vercel equivalent, not looser — so this throws naming both paths rather than picking one to
  * trust.
  */
-function assertSelfhostConfig(config: Config): SelfhostConfig {
+function assertSelfhostConfig(config: Config, target: 'railway' | 'plane'): SelfhostConfig {
   const selfhost = config.selfhost
   if (!selfhost) {
     throw new DeployError(
-      'contrail.config.ts has no `selfhost` configured — required for `--target railway`. See ' +
-        '`selfhost: { target, volume, slug, internalPath, clientPath }` in the docs.',
+      `contrail.config.ts has no \`selfhost\` configured — required for \`--target ${target}\`. ` +
+        (target === 'plane'
+          ? 'See `selfhost: { target: \'plane\', projectId }` in the docs.'
+          : 'See `selfhost: { target, volume, slug, internalPath, clientPath }` in the docs.'),
     )
   }
-  if (selfhost.internalPath === selfhost.clientPath) {
+  // A `--target` that disagrees with the configured one would push a build somewhere nobody
+  // described. Refuse rather than guess which of the two the caller meant.
+  if (selfhost.target !== target) {
+    throw new DeployError(
+      `\`--target ${target}\` but contrail.config.ts configures \`selfhost.target: '${selfhost.target}'\`. ` +
+        'Fix one of the two so they agree.',
+    )
+  }
+  if (selfhost.target === 'railway' && selfhost.internalPath === selfhost.clientPath) {
     throw new DeployError(
       `Refusing to deploy: \`selfhost.internalPath\` and \`selfhost.clientPath\` are both ` +
         `'${selfhost.internalPath}' — an internal build must never be able to land on the client ` +
@@ -141,7 +159,14 @@ function assertValidSlug(slug: string): void {
   }
 }
 
+/**
+ * Where a build lands on the target. For `railway` that is a directory the proxy serves; for
+ * `plane` the server owns the layout entirely, so the only thing it needs from us is which
+ * audience this build is — the transport sends it as the `audience` field and the server keys its
+ * build pointer on it (`docs/plane-docs-api-spec.md`).
+ */
 function remotePathFor(selfhost: SelfhostConfig, audience: Audience): string {
+  if (selfhost.target === 'plane') return audience
   const base = audience === 'client' ? selfhost.clientPath : selfhost.internalPath
   return `${base}/${selfhost.slug}`
 }
@@ -240,8 +265,9 @@ export async function deploy(options: DeployOptions): Promise<DeployResult> {
   const audience = parseDeployAudience(options.audience)
   const outDir = options.outDir ?? join(options.config.root, 'site')
 
-  if ((options.target ?? 'vercel') === 'railway') {
-    return deploySelfhost(options, audience, outDir)
+  const target = options.target ?? 'vercel'
+  if (isSelfhostTarget(target)) {
+    return deploySelfhost(options, audience, outDir, target)
   }
 
   // Guard 1 runs before anything is built: a wrong-project deploy is the single worst outcome this
@@ -290,9 +316,14 @@ export async function deploy(options: DeployOptions): Promise<DeployResult> {
  * path, then — guards permitting — a `DeployTransport.push` instead of a Vercel CLI invocation.
  * Nothing here knows about Railway specifically; that lives entirely in `src/deploy/railway.ts`.
  */
-async function deploySelfhost(options: DeployOptions, audience: Audience, outDir: string): Promise<DeployResult> {
-  const selfhost = assertSelfhostConfig(options.config)
-  assertValidSlug(selfhost.slug)
+async function deploySelfhost(
+  options: DeployOptions,
+  audience: Audience,
+  outDir: string,
+  target: 'railway' | 'plane',
+): Promise<DeployResult> {
+  const selfhost = assertSelfhostConfig(options.config, target)
+  if (selfhost.target === 'railway') assertValidSlug(selfhost.slug)
   const remotePath = remotePathFor(selfhost, audience)
 
   const emitted = docsForAudience(options.docs, siteAudienceFor(audience))
@@ -308,8 +339,10 @@ async function deploySelfhost(options: DeployOptions, audience: Audience, outDir
 
   if (!options.transport) {
     throw new DeployError(
-      "`--target railway` requires a transport (none was provided) — see createRailwayTransport in " +
-        'src/deploy/railway.ts.',
+      `\`--target ${target}\` requires a transport (none was provided) — see ` +
+        (target === 'plane'
+          ? 'createPlaneDocsTransport in src/deploy/plane-docs.ts.'
+          : 'createRailwayTransport in src/deploy/railway.ts.'),
     )
   }
 
