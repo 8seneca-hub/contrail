@@ -89,6 +89,51 @@ setup: creating the two Vercel projects (internal and client) from this one repo
 configuring `vercel.internalProject`/`vercel.clientProject`, and the guard that refuses to
 publish an internal build to the client project (or vice versa).
 
+## Agent integration
+
+Two setups, in order of effort. Both point an agent at the same thing: `docs/llms.txt`, plus
+`contrail context` to pick the two or three documents a task actually needs instead of all
+forty-four.
+
+### The one-line setup — no plugin required
+
+Add one line to the project's `CLAUDE.md`:
+
+```markdown
+Project documentation: `docs/llms.txt` is the index of every document — read it before
+answering questions about scope, estimates, architecture or past decisions.
+Documents are the source of truth; the built site under `site/` is generated output.
+```
+
+**That line is the minimum viable integration.** It works with no plugin installed, in any
+project a contrail tree lives in. Every session finds the documentation without being told and,
+with `contrail` on `PATH`, can run `contrail context --task <type>` itself to narrow down which
+documents to read. See [`docs/using-contrail.md`](docs/using-contrail.md) for the full guide,
+including the task-to-document table `contrail context` implements.
+
+### The plugin — auto-triggering, plus slash commands
+
+Installing `plugin/` as a Claude Code plugin adds:
+
+- **The `contrail-docs` skill**, which fires on two situations without being asked: authoring or
+  reorganising a document (a PRD, ADR, meeting note, scope statement, estimate, change request,
+  QA report, release, ...), and a question that needs project context ("is this in scope?", "why
+  did we decide that?", "how long will this take?") — the second is the one that matters, because
+  an agent doesn't know it's missing context until it has already answered without it.
+- **Four commands** that wrap the CLI directly — none reimplements logic that lives in `src/`:
+
+  | Command | Wraps |
+  |---|---|
+  | `/docs-context` | `contrail context` — accepts a task type or free-text keywords |
+  | `/docs-new` | `contrail scaffold` |
+  | `/docs-check` | `contrail check` |
+  | `/docs-site` | `contrail site` |
+
+Install it the way any local Claude Code plugin installs — point Claude Code at this
+repository's `plugin/` directory. The plugin is worth it once an agent works across many
+sessions or many people share the project; the one-line `CLAUDE.md` addition above is what makes
+it work at all, with or without the plugin installed.
+
 ## Known limitations
 
 - **Archiving a document loses its Plane page for good.** Plane's verified endpoint set has

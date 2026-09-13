@@ -113,19 +113,41 @@ reads only the documents it needs rather than everything.
 
 ### Which documents for which task
 
-Pointing an agent at all 44 documents wastes context and buries the two that matter. In practice:
+Pointing an agent at all 44 documents wastes context and buries the two that matter. `contrail
+context --task <type>` answers this without a human doing the pointing at all — see "Ask contrail
+which documents a task needs" below. **This is the same table `src/context.ts` implements as
+`TASK_DOC_KINDS`** — one fact, two homes, one for a person reading this guide and one for the CLI's
+`--task` flag. Change one, change both.
 
-| Task | Give it |
+| `--task` | Give it (in this order — earlier ones matter more) |
 |---|---|
-| Build a feature | `04-technical/prd.md`, `architecture.md`, the relevant ADRs |
-| Estimate work | `02-planning/estimate.md`, `assumptions.md`, `wbs.md` |
-| Answer "is this in scope?" | `02-planning/scope-statement.md`, `03-management/change-requests/` |
-| Explain a past decision | `03-management/decisions/` — the ADR titles alone usually answer it |
-| Prepare for a client call | `03-management/open-questions.md`, `meetings/` (newest first) |
-| Onboard someone | `01-overview/charter.md`, `glossary.md`, `04-technical/architecture.md` |
+| `feature` | `04-technical/prd.md`, `architecture.md`, `api-reference.md`, the relevant ADRs |
+| `estimate` | `02-planning/estimate.md`, `assumptions.md`, `wbs.md`, `scope-statement.md` |
+| `scope` | `02-planning/scope-statement.md`, `03-management/change-requests/`, `assumptions.md` |
+| `decision` | `03-management/decisions/` (ADRs), `04-technical/architecture.md` |
+| `client-call` | `03-management/open-questions.md`, `meetings/` (newest first), `change-requests/`, `scope-statement.md` |
+| `onboard` | `01-overview/charter.md`, `glossary.md`, `04-technical/architecture.md`, `prd.md` |
+| `test` | `05-delivery/test-plan.md`, `qa-reports/` (newest first), `04-technical/prd.md` |
+| `deploy` | `05-delivery/deployment.md`, `releases/` (highest version first), `04-technical/architecture.md` |
+| `risk` | `03-management/risk-log.md`, `02-planning/assumptions.md`, `03-management/open-questions.md` |
 
-The ADR row is worth calling out: because an ADR title states the decision as an assertion, an agent
-scanning `llms.txt` often answers a "why" question from the index without opening a file.
+The `decision` row is worth calling out: because an ADR title states the decision as an assertion, an
+agent scanning `llms.txt` often answers a "why" question from the index without opening a file.
+
+### Ask contrail which documents a task needs
+
+```bash
+contrail context --task scope
+contrail context --task estimate --audience client --json
+contrail context pricing contingency   # keywords work with no --task at all
+```
+
+Returns a ranked list with a `reason` per document — not just a path, so an agent can tell when the
+selection looks wrong. A `status: stale` document is never dropped; it sinks to the bottom of the
+list and is labelled, because it may be the only record of something. `--audience client` filters
+exactly the way `contrail site --audience client` does — an agent working on a client's behalf never
+gets an internal document back from either surface. `--limit <n>` truncates to the top N; `--json`
+gives `{path, title, summary, docKind, status, reason, score}` per document.
 
 ### In a single session
 
@@ -164,6 +186,7 @@ source rather than the HTML:
 | `contrail build` | Parse and validate everything; fails on broken frontmatter or invalid diagram IR |
 | `contrail check [--strict] [--index] [--audience <x>]` | Lint; `--index` writes `llms.txt` |
 | `contrail status` | Which documents exist, which are stubs, which lack an owner |
+| `contrail context [--task <type>] [keywords...] [--audience <x>] [--limit <n>]` | Ranked documents for a task, with a reason each |
 | `contrail site --out <dir> [--audience client]` | Build the site |
 | `contrail sheet pull \| push <doc>` | Refresh or write back spreadsheet ranges |
 | `contrail deploy [--audience <x>] [--prod] [--dry-run]` | Deploy to Vercel |

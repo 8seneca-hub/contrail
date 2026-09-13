@@ -4,6 +4,7 @@ import { parseArgs } from 'node:util'
 import { globSync } from 'tinyglobby'
 import { buildLlmsTxt, checkDocs, checkExitCode, docStatusReport, writeLlmsTxt } from './check.js'
 import { findConfigPath, loadConfig, readProjectMeta } from './config.js'
+import { contextEmptyMessage, contextQuery, isTaskType, TASK_TYPES, type TaskType } from './context.js'
 import { defaultCliRunner, deploy, parseDeployAudience } from './deploy.js'
 import { buildSite, docsForAudience, pageFileFor } from './emit/site.js'
 import { loadLock, saveLock } from './lock.js'
@@ -230,6 +231,8 @@ export async function main(argv: string[]): Promise<number> {
       client: { type: 'string' },
       project: { type: 'string' },
       'start-date': { type: 'string' },
+      task: { type: 'string' },
+      limit: { type: 'string' },
     },
   })
 
@@ -241,7 +244,8 @@ export async function main(argv: string[]): Promise<number> {
         'publish [--dry-run] [--force] [--only <substring>] [--audience client] | ' +
         'site [--out <dir>] [--audience client] | check [--strict] [--index] [--audience client] [--json] | ' +
         'scaffold <docKind> <path> [--json] | sheet pull <doc> | sheet push <doc> [--force] | ' +
-        'deploy [--audience client|internal] [--prod] [--dry-run] [--yes]',
+        'deploy [--audience client|internal] [--prod] [--dry-run] [--yes] | ' +
+        `context [--task <${TASK_TYPES.join('|')}>] [keywords...] [--audience client] [--json] [--limit <n>]`,
     )
     return 0
   }
@@ -408,6 +412,50 @@ export async function main(argv: string[]): Promise<number> {
       console.log(`contrail check: ${errors} error(s), ${warnings} warning(s).`)
     }
     return exitCode
+  }
+
+  if (command === 'context') {
+    let task: TaskType | undefined
+    if (values.task !== undefined) {
+      if (!isTaskType(values.task)) {
+        const message = `Unknown --task '${values.task}'. Supported: ${TASK_TYPES.join(', ')}.`
+        if (values.json) console.log(JSON.stringify({ error: message }))
+        else console.error(message)
+        return 2
+      }
+      task = values.task
+    }
+    const keywords = positionals.slice(1)
+    let limit: number | undefined
+    if (values.limit !== undefined) {
+      limit = Number(values.limit)
+      if (!Number.isInteger(limit) || limit < 0) {
+        const message = `--limit must be a non-negative integer, got '${values.limit}'.`
+        if (values.json) console.log(JSON.stringify({ error: message }))
+        else console.error(message)
+        return 2
+      }
+    }
+    const query = { task, keywords, audience, limit }
+    const results = contextQuery(allDocs, query)
+
+    if (values.json) {
+      console.log(
+        JSON.stringify({ results, count: results.length, message: results.length === 0 ? contextEmptyMessage(query) : null }),
+      )
+      return 0
+    }
+
+    if (results.length === 0) {
+      console.log(contextEmptyMessage(query))
+      return 0
+    }
+    results.forEach((entry, i) => {
+      const stale = entry.status === 'stale' ? ' (stale)' : ''
+      console.log(`${i + 1}. ${entry.docKind ?? '(no docKind)'}${stale}  ${entry.path}`)
+      console.log(`   ${entry.title} — ${entry.reason}`)
+    })
+    return 0
   }
 
   if (command === 'status') {

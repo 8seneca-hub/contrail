@@ -1,0 +1,12 @@
+{
+  "name": "contrail",
+  "description": "Rank contrail-managed project documents by task, scaffold new ones, lint them, and build the internal/client site — plugin wrappers around the contrail CLI, plus the contrail-docs skill that fires on documentation work and on questions that need project context.",
+  "version": "0.4.0",
+  "commands": [
+    "./commands/docs-context.md",
+    "./commands/docs-new.md",
+    "./commands/docs-check.md",
+    "./commands/docs-site.md"
+  ],
+  "keywords": ["documentation", "docs", "contrail", "agency", "context"]
+}
