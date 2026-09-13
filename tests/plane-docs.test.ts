@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { createHash } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
 import { collectDocsFiles, createPlaneDocsTransport } from '../src/deploy/plane-docs.js'
 
@@ -20,7 +21,7 @@ interface Call {
 
 /** A Plane that presigns every file it is offered. `calls` records the API requests in order, which
  * is what most of these tests are really asserting about. */
-function fakePlane(options: { presignOnly?: string[]; uploadStatus?: number } = {}) {
+function fakePlane(options: { presignOnly?: string[]; reuse?: string[]; uploadStatus?: number } = {}) {
   const calls: Call[] = []
   const uploaded: string[] = []
 
@@ -33,10 +34,11 @@ function fakePlane(options: { presignOnly?: string[]; uploadStatus?: number } = 
       const paths = options.presignOnly ?? body.files.map((file) => file.path)
       return new Response(
         JSON.stringify({
-          uploads: paths.map((path) => ({
-            path,
-            upload_data: { url: `https://minio.test/put/${path}`, fields: { key: path } },
-          })),
+          uploads: paths.map((path) =>
+            options.reuse?.includes(path)
+              ? { path, reused: true }
+              : { path, upload_data: { url: `https://minio.test/put/${path}`, fields: { key: path } } },
+          ),
         }),
         { status: 200 },
       )
@@ -73,6 +75,12 @@ describe('collectDocsFiles', () => {
     expect(files.map((file) => file.path)).toEqual(['04-technical/prd.html', 'index.html', 'site.css'])
     expect(files.find((file) => file.path === 'site.css')?.type).toBe('text/css')
     expect(files.find((file) => file.path === 'index.html')?.size).toBe('<h1>Index</h1>'.length)
+  })
+
+  it('hashes each file, so the server can recognise bytes it already holds', () => {
+    const expected = createHash('sha256').update('<h1>Index</h1>').digest('hex')
+
+    expect(collectDocsFiles(buildDir()).find((file) => file.path === 'index.html')?.sha256).toBe(expected)
   })
 
   it('types an unknown extension as a stream rather than guessing', () => {
@@ -135,7 +143,7 @@ describe('createPlaneDocsTransport', () => {
     const plane = fakePlane({ presignOnly: ['index.html', 'site.css'] })
 
     await expect(transportFor(plane.fetchFn).push(buildDir(), 'internal', {})).rejects.toThrow(
-      /no upload URL for 1 file\(s\), first: 04-technical\/prd\.html/,
+      /neither presigned nor claimed to already hold 1 file\(s\), first: 04-technical\/prd\.html/,
     )
     expect(plane.calls.some((call) => call.url.includes('/commit/'))).toBe(false)
   })
@@ -144,6 +152,26 @@ describe('createPlaneDocsTransport', () => {
     const plane = fakePlane({ uploadStatus: 500 })
 
     await expect(transportFor(plane.fetchFn).push(buildDir(), 'internal', {})).rejects.toThrow(/failed with 500/)
+    expect(plane.calls.some((call) => call.url.includes('/commit/'))).toBe(false)
+  })
+
+  // Editing one document changes one file out of fifty-odd; the rest are byte-identical because
+  // the build is deterministic. A server that recognises them need never receive them again.
+  it('skips files the server says it already holds, and still commits the whole build', async () => {
+    const plane = fakePlane({ reuse: ['site.css', '04-technical/prd.html'] })
+    const result = await transportFor(plane.fetchFn).push(buildDir(), 'internal', {})
+
+    expect(plane.uploaded).toEqual(['index.html'])
+    expect(result.filesSent).toBe(1)
+    expect(plane.calls[1]?.url).toContain('/commit/')
+  })
+
+  it('still refuses to commit when a file is neither presigned nor claimed as already held', async () => {
+    const plane = fakePlane({ presignOnly: ['index.html'], reuse: ['index.html'] })
+
+    await expect(transportFor(plane.fetchFn).push(buildDir(), 'internal', {})).rejects.toThrow(
+      /neither presigned nor claimed to already hold 2 file\(s\)/,
+    )
     expect(plane.calls.some((call) => call.url.includes('/commit/'))).toBe(false)
   })
 })

@@ -43,10 +43,10 @@ Request — the manifest of one build:
   "build_id": "2026-09-13T11-42-07Z-a1b2c3",
   "audience": "internal",
   "files": [
-    { "path": "index.html",                "size": 4821,  "type": "text/html" },
-    { "path": "04-technical/prd.html",      "size": 18422, "type": "text/html" },
-    { "path": "diagrams/a3b58290.html",     "size": 807898,"type": "text/html" },
-    { "path": "site.css",                   "size": 6210,  "type": "text/css"  }
+    { "path": "index.html",            "size": 4821,   "type": "text/html", "sha256": "9f2b…" },
+    { "path": "04-technical/prd.html", "size": 18422,  "type": "text/html", "sha256": "c41a…" },
+    { "path": "diagrams/a3b58290.html","size": 807898, "type": "text/html", "sha256": "a3b5…" },
+    { "path": "site.css",              "size": 6210,   "type": "text/css",  "sha256": "0e77…" }
   ]
 }
 ```
@@ -149,6 +149,57 @@ Belt and braces. The sandbox attribute is the part that must exist.
 Note this does **not** involve the editor sanitizer. The iframe is application code in a React route,
 not user-entered page content, so nothing about Plane's editor needs changing.
 
+## Document lifecycle — what MinIO actually has to do
+
+Worth being explicit about, because the answer is "less than you would expect". contrail does not
+send document operations. It sends **whole builds**, and a build is immutable once committed.
+
+| The team does this | contrail sends | MinIO ends up with |
+|---|---|---|
+| Edits a document | a new build | one changed object; the other ~50 byte-identical |
+| Adds a document | a new build | nearly every object rewritten — every page carries the nav |
+| Deletes a document | a new build | the object is simply never written into the new prefix |
+| Renames or moves one | a new build | new path present, old path absent |
+
+Measured on a real tree of 31 files: **editing one document changes exactly one file; adding one
+changes 32 of 33**, because every page renders the navigation. Rebuilding an unchanged tree
+produces byte-identical output, which is what makes the optional reuse below safe.
+
+**There is no delete endpoint, and there should not be one.** A deleted document is one that the
+next manifest does not mention, so it never reaches the new prefix, and the pointer flip makes it
+unreachable in the same instant the rest of the build goes live. Nothing to get out of sync.
+
+### Pruning is the only cleanup, and it is the only thing that erases
+
+Keep the last three builds; delete the rest. Two consequences worth stating plainly:
+
+- Storage is roughly `build size × 3` per project per audience. The sample build is 1.7 MB, so
+  about 5 MB per project — the diagram files dominate it, not the pages.
+- **A deleted document still exists in the previous build's prefix until that build is pruned.** It
+  is unreachable through the API, because the serving endpoint only ever resolves the current
+  pointer — but the object is there. If a document is being deleted *because* its contents should
+  not exist, pruning that project's older builds is the step that actually removes it. Please make
+  that possible to trigger on demand, not only on a schedule.
+
+This is also the reason the serving endpoint must never accept a caller-supplied `build_id`. A
+parameter like `?build=<id>` would turn every retained prefix into a way to read a document that
+was deliberately removed.
+
+### Optional: let contrail skip files you already have
+
+Only worth building if the simple version proves slow. Each manifest entry carries a `sha256`. If
+you already hold an object with those bytes from an earlier build of the same project and audience,
+answer with `{"path": "...", "reused": true}` instead of presigned fields, and server-side copy it
+into the new prefix. contrail already understands that answer and will skip sending those bytes.
+
+An implementation that presigns everything is correct — this only changes how much crosses the
+network. For the common case, editing a single document, it is the difference between sending a
+few kilobytes and sending the whole site.
+
+Whatever you choose: a path that is **neither** presigned **nor** marked reused makes contrail
+abort before committing, because the alternative is publishing a build with a page or stylesheet
+missing.
+
 ## Client access
 
 Clients are not Plane members, so none of the above reaches them. Two options, to decide separately —
@@ -169,7 +220,8 @@ contrail deploy --target plane --audience internal
 
 1. Build the audience-filtered site
 2. `POST …/docs/uploads/` with the manifest
-3. POST each file to its presigned URL (multipart form, straight to MinIO)
+3. POST each file to its presigned URL (multipart form, straight to MinIO), skipping any the
+   server marked `reused`
 4. `POST …/docs/commit/` to flip the pointer
 
 It authenticates with a Plane API key from the environment, never stored in config. It already

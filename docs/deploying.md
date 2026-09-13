@@ -163,6 +163,44 @@ Client documents are a separate decision: Plane members are the team, not the cl
 Plane side grows a share token for the `client` build, or client docs stay on Vercel as described
 above.
 
+### What happens when documents change
+
+A deploy sends a whole build, not a set of edits. That makes the day-to-day flow short — edit the
+Markdown, `contrail check`, deploy — and it makes deletes work without a delete command: a document
+you removed is simply not in the next build, and the pointer flip retires it and publishes
+everything else at the same instant.
+
+Measured on a 31-file tree: editing one document changes one built file; **adding** one changes 32
+of 33, because every page renders the navigation. So an edit is cheap to publish and a new document
+is not — which is the opposite of what most people assume, and the reason contrail sends a hash per
+file so the server can skip what it already holds.
+
+Three things that catch people out:
+
+**Un-marking a document as `client` does not retract it.** Removing `audience: client` takes it out
+of the *next client build* — but until someone actually runs the client deploy, the client site
+still serves the previous build, which still contains it. If a document reached a client by mistake,
+deploying `--audience internal` changes nothing; the fix is to deploy the client build. Deploy both
+audiences together, always, and this cannot bite you:
+
+```bash
+contrail deploy --target plane --audience internal
+contrail deploy --target plane --audience client
+```
+
+**A deleted document survives in storage until its old build is pruned.** It is unreachable — the
+server only serves the current build — but the bytes are still in MinIO for the next couple of
+builds. If you deleted something *because* it should not exist anywhere, ask for that project's
+older builds to be pruned rather than assuming the delete did it.
+
+**A rename breaks links people have already pasted.** The new path works and every link inside the
+site is rebuilt, but a URL someone dropped into a ticket last month now 404s. Rename early, or
+accept it.
+
+**Deploying from a stale checkout reverts things.** Two deploys race by last-commit-wins, and the
+loser is not a merge — it is the whole site as that checkout saw it. Deploy from CI on `main`, not
+from laptops, and this never comes up.
+
 ### The Railway volume target
 
 `--target railway` predates the Plane API and remains implemented

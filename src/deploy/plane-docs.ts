@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
 import { DeployError } from '../deploy.js'
@@ -47,6 +48,11 @@ export interface DocsFile {
   path: string
   size: number
   type: string
+  /** Content hash of the bytes. Two purposes: the server can verify what it received, and it can
+   * recognise an object it already holds from an earlier build and copy it server-side instead of
+   * making us send it again (see `reused` on the upload response). Builds are deterministic —
+   * rebuilding an unchanged tree produces byte-identical output — which is what makes that safe. */
+  sha256: string
 }
 
 /** Every file under `dir`, as the manifest describes them. Paths are POSIX-separated regardless of
@@ -61,14 +67,26 @@ export function collectDocsFiles(dir: string, base = dir): DocsFile[] {
       continue
     }
     const path = relative(base, abs).split(sep).join('/')
-    files.push({ path, size: statSync(abs).size, type: contentTypeFor(path) })
+    const bytes = readFileSync(abs)
+    files.push({
+      path,
+      size: statSync(abs).size,
+      type: contentTypeFor(path),
+      sha256: createHash('sha256').update(bytes).digest('hex'),
+    })
   }
   return files
 }
 
 export interface PresignedUpload {
   path: string
-  upload_data: { url: string; fields: Record<string, string> }
+  /** Absent when `reused` is true — there is nothing to send. */
+  upload_data?: { url: string; fields: Record<string, string> }
+  /** The server already holds these bytes from an earlier build and will copy them into this one
+   * itself. Optional on the server's side: an implementation that presigns everything is correct,
+   * just slower. Editing a single document changes one file out of fifty-odd, so this is the
+   * difference between sending 3 KB and sending the whole site. */
+  reused?: boolean
 }
 
 export interface PlaneDocsTransportOptions {
@@ -139,21 +157,27 @@ export function createPlaneDocsTransport(opts: PlaneDocsTransportOptions): Deplo
       }
       const uploads = manifest.uploads ?? []
 
-      // A missing presigned entry means that file would silently never exist on the server, and
-      // the commit below would then make a build live with a hole in it. Fail before the commit.
-      const missing = files.filter((file) => !uploads.some((upload) => upload.path === file.path))
+      // Every file must be accounted for: either the server presigned it, or it says it already
+      // has the bytes. Anything else would silently never exist on the server, and the commit
+      // below would then make a build live with a hole in it. Fail before the commit.
+      const accounted = new Set(
+        uploads.filter((upload) => upload.reused === true || upload.upload_data).map((upload) => upload.path),
+      )
+      const missing = files.filter((file) => !accounted.has(file.path))
       if (missing.length > 0) {
         throw new DeployError(
-          `Plane returned no upload URL for ${missing.length} file(s), first: ${missing[0]?.path}. ` +
-            'Nothing was committed; the previous build is still live.',
+          `Plane neither presigned nor claimed to already hold ${missing.length} file(s), first: ` +
+            `${missing[0]?.path}. Nothing was committed; the previous build is still live.`,
         )
       }
 
-      for (let index = 0; index < uploads.length; index += concurrency) {
+      const toSend = uploads.filter((upload) => upload.reused !== true && upload.upload_data)
+      for (let index = 0; index < toSend.length; index += concurrency) {
         await Promise.all(
-          uploads.slice(index, index + concurrency).map(async (upload) => {
+          toSend.slice(index, index + concurrency).map(async (upload) => {
             const form = new FormData()
-            for (const [key, value] of Object.entries(upload.upload_data.fields)) form.append(key, value)
+            const uploadData = upload.upload_data!
+            for (const [key, value] of Object.entries(uploadData.fields)) form.append(key, value)
             const body = readFileSync(join(localDir, ...upload.path.split('/')))
             form.append(
               'file',
@@ -162,7 +186,7 @@ export function createPlaneDocsTransport(opts: PlaneDocsTransportOptions): Deplo
             )
 
             // Deliberately no API key: object storage is a different trust boundary.
-            const response = await fetchFn(upload.upload_data.url, { method: 'POST', body: form })
+            const response = await fetchFn(uploadData.url, { method: 'POST', body: form })
             if (!response.ok) {
               throw new DeployError(
                 `Upload of ${upload.path} failed with ${response.status}. Nothing was committed; ` +
@@ -174,7 +198,9 @@ export function createPlaneDocsTransport(opts: PlaneDocsTransportOptions): Deplo
       }
 
       await postJson('commit/', { build_id: buildId, audience })
-      return { filesSent: files.length, bytes }
+      // `filesSent` counts what actually crossed the network, so a reusing server visibly reports
+      // fewer than the build contains.
+      return { filesSent: toSend.length, bytes }
     },
   }
 }
