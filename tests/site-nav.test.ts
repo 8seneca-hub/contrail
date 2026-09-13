@@ -107,3 +107,64 @@ describe('Task 5: persistent section nav', () => {
     expect(index).not.toContain('role="tablist"')
   })
 })
+
+describe('FIX B: sub-tab order is by consultation priority, not alphabetical', () => {
+  it('orders `03-management`\'s sub-tabs Meetings, Decisions, Change Requests — not alphabetically', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'contrail-nav-subtab-order-'))
+    const changeRequest = writeAt(root, 'docs/03-management/change-requests/0001-x.md', FM())
+    const decision = writeAt(root, 'docs/03-management/decisions/0001-x.md', FM())
+    const meeting = writeAt(root, 'docs/03-management/meetings/2026-01-01.md', FM())
+    const outDir = join(root, 'out')
+    await buildSite({ docs: [changeRequest, decision, meeting], outDir, cacheDir: join(root, '.cache') })
+
+    const management = readFileSync(join(outDir, '03-management', 'index.html'), 'utf8')
+    const meetingsAt = management.indexOf('>Meetings ')
+    const decisionsAt = management.indexOf('>Decisions ')
+    const changeRequestsAt = management.indexOf('>Change Requests ')
+    expect(meetingsAt).toBeGreaterThanOrEqual(0)
+    expect(meetingsAt).toBeLessThan(decisionsAt)
+    expect(decisionsAt).toBeLessThan(changeRequestsAt)
+  })
+
+  it('falls back to alphabetical for an unlisted sub-folder, after every named priority folder', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'contrail-nav-subtab-fallback-'))
+    const meeting = writeAt(root, 'docs/03-management/meetings/2026-01-01.md', FM())
+    const zzz = writeAt(root, 'docs/03-management/zzz-misc/note.md', FM())
+    const aaa = writeAt(root, 'docs/03-management/aaa-misc/note.md', FM())
+    const outDir = join(root, 'out')
+    await buildSite({ docs: [meeting, zzz, aaa], outDir, cacheDir: join(root, '.cache') })
+
+    const management = readFileSync(join(outDir, '03-management', 'index.html'), 'utf8')
+    const meetingsAt = management.indexOf('>Meetings ')
+    const aaaAt = management.indexOf('>Aaa Misc ')
+    const zzzAt = management.indexOf('>Zzz Misc ')
+    expect(meetingsAt).toBeGreaterThanOrEqual(0)
+    expect(meetingsAt).toBeLessThan(aaaAt)
+    expect(aaaAt).toBeLessThan(zzzAt)
+  })
+})
+
+describe('FIX C: a directory-level README.md is not a document', () => {
+  it('excludes README.md from a tab\'s document count', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'contrail-readme-count-'))
+    const readme = writeAt(root, 'docs/03-management/meetings/README.md', FM())
+    const meeting = writeAt(root, 'docs/03-management/meetings/2026-01-01.md', FM())
+    const outDir = join(root, 'out')
+    await buildSite({ docs: [readme, meeting], outDir, cacheDir: join(root, '.cache') })
+
+    const management = readFileSync(join(outDir, '03-management', 'index.html'), 'utf8')
+    expect(management).toContain('Meetings <span class="tab-count">1</span>')
+  })
+
+  it('a directory containing only a README shows no tab at all', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'contrail-readme-only-'))
+    const overview = writeAt(root, 'docs/01-overview/brief.md', FM())
+    const readme = writeAt(root, 'docs/03-management/meetings/README.md', FM())
+    const outDir = join(root, 'out')
+    await buildSite({ docs: [overview, readme], outDir, cacheDir: join(root, '.cache') })
+
+    const index = readFileSync(join(outDir, 'index.html'), 'utf8')
+    expect(index).not.toContain('Management &amp; Operations')
+    expect(existsSync(join(outDir, '03-management', 'index.html'))).toBe(false)
+  })
+})

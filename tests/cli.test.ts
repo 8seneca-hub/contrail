@@ -815,4 +815,86 @@ describe('sheet command (via main)', () => {
     expect(logs.join('\n')).toContain('sheet pull <doc>')
     expect(logs.join('\n')).toContain('sheet push <doc>')
   })
+
+  it('help text lists the deploy command', async () => {
+    const logs: string[] = []
+    const spy = vi.spyOn(console, 'log').mockImplementation((msg: string) => logs.push(msg))
+    const code = await main(['help'])
+    spy.mockRestore()
+    expect(code).toBe(0)
+    expect(logs.join('\n')).toContain('deploy [--audience client|internal]')
+  })
+})
+
+describe('contrail deploy (CLI wiring)', () => {
+  function setupWorkspace() {
+    const root = mkdtempSync(join(tmpdir(), 'contrail-deploy-cli-'))
+    mkdirSync(join(root, 'docs'), { recursive: true })
+    writeFileSync(
+      join(root, 'docs', 'brief.md'),
+      '---\ntitle: Brief\nsummary: S\nstatus: current\n---\n\nBody.\n',
+    )
+    writeFileSync(
+      join(root, 'contrail.config.ts'),
+      "export default { plane: { baseUrl: 'https://plane.test', workspace: 'acme' }, repos: {}, " +
+        "docs: ['./docs/**/*.md'], vercel: { internalProject: 'meridian-internal', clientProject: " +
+        "'meridian-client' } }\n",
+    )
+    return root
+  }
+
+  // These exercise only the pre-runner guard path — a bad/missing Vercel link aborts before
+  // `deploy()` ever reaches the injected `defaultCliRunner`, so `main` never shells out to a real
+  // `vercel` and never blocks on interactive stdin.
+
+  it('rejects (exit 1) with an actionable message when the directory has never been linked', async () => {
+    const root = setupWorkspace()
+    const logs: string[] = []
+    const spy = vi.spyOn(console, 'error').mockImplementation((msg: string) => logs.push(msg))
+    const cwd = process.cwd()
+    process.chdir(root)
+    try {
+      expect(await main(['deploy'])).toBe(1)
+    } finally {
+      process.chdir(cwd)
+      spy.mockRestore()
+    }
+    expect(logs.join('\n')).toContain('vercel link')
+  })
+
+  it('rejects an unknown --audience value before touching the network', async () => {
+    const root = setupWorkspace()
+    const logs: string[] = []
+    const spy = vi.spyOn(console, 'error').mockImplementation((msg: string) => logs.push(msg))
+    const cwd = process.cwd()
+    process.chdir(root)
+    try {
+      expect(await main(['deploy', '--audience', 'bogus'])).toBe(2)
+    } finally {
+      process.chdir(cwd)
+      spy.mockRestore()
+    }
+    expect(logs.join('\n')).toContain("Unknown --audience 'bogus'")
+  })
+
+  it('a project mismatch aborts naming both projects, without shelling out to vercel', async () => {
+    const root = setupWorkspace()
+    mkdirSync(join(root, '.vercel'), { recursive: true })
+    writeFileSync(
+      join(root, '.vercel', 'project.json'),
+      JSON.stringify({ projectId: 'prj_x', projectName: 'meridian-client' }),
+    )
+    const logs: string[] = []
+    const spy = vi.spyOn(console, 'error').mockImplementation((msg: string) => logs.push(msg))
+    const cwd = process.cwd()
+    process.chdir(root)
+    try {
+      expect(await main(['deploy', '--audience', 'internal'])).toBe(1)
+    } finally {
+      process.chdir(cwd)
+      spy.mockRestore()
+    }
+    expect(logs.join('\n')).toContain('meridian-client')
+    expect(logs.join('\n')).toContain('meridian-internal')
+  })
 })

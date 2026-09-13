@@ -70,6 +70,12 @@ export interface Config {
    * relative links; nothing here is mandatory.
    */
   site?: { host: 'vercel'; internalUrl?: string; clientUrl?: string }
+  /**
+   * Which Vercel project each audience deploys to (M3 Task 2) — `contrail deploy` compares this
+   * against the project actually linked in `.vercel/project.json` before every deploy, so an
+   * internal build can never reach the client's project (or vice versa) over a mistyped flag.
+   */
+  vercel?: { internalProject?: string; clientProject?: string }
   /** Archify CLI location. When `bin` is absent, `archify` is resolved from PATH. */
   archify?: { bin?: string }
   /** Google Sheets service-account credentials. `GOOGLE_APPLICATION_CREDENTIALS` takes precedence

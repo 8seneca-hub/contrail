@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, relative, resolve, sep } from 'node:path'
 import { visit } from 'unist-util-visit'
-import type { Heading, Link, List, Root, RootContent, Text } from 'mdast'
+import type { Heading, Link, List, ListItem, Root, RootContent, Text } from 'mdast'
 import { parseAttrs } from './blocks/attrs.js'
 import { readProjectMeta } from './config.js'
 import {
@@ -27,6 +27,48 @@ const FLOW_HEADING = /flow|lifecycle|sequence|architecture|pipeline|process|jour
 const EXPLANATION_HEADING = /why|background|rationale|design note/i
 const RELATIVE_TIME = /\brecently\b|\bcurrently\b|\bthe current version\b|\bas of now\b/i
 const DANGLING_REFERENCE = /\bas (?:mentioned|described|shown) above\b|\bsee below\b/i
+
+/**
+ * Common imperative-verb openers for a procedural step — not exhaustive (this is a heuristic, not a
+ * grammar parser), but it covers the verbs that dominate real how-to prose: open a tool, run a
+ * command, click a button, merge a branch. A leading connector ("Then", "Next", "First", ...) is
+ * stripped before the check, since "Then restart the service" is still an imperative step even
+ * though its first word is a connector rather than the verb itself.
+ */
+const IMPERATIVE_VERBS = new Set([
+  'run', 'open', 'click', 'merge', 'deploy', 'install', 'configure', 'add', 'remove', 'delete',
+  'update', 'set', 'enable', 'disable', 'navigate', 'select', 'choose', 'verify', 'check',
+  'confirm', 'restart', 'start', 'stop', 'build', 'push', 'pull', 'commit', 'sign', 'go', 'type',
+  'enter', 'copy', 'paste', 'save', 'export', 'import', 'review', 'submit', 'wait', 'ensure',
+  'use', 'download', 'upload', 'edit', 'write', 'read', 'execute', 'launch', 'create', 'send',
+  'fill', 'log', 'turn', 'attach', 'assign', 'schedule', 'approve', 'request', 'grant', 'revoke',
+  'reset', 'clone', 'checkout', 'fetch', 'rebase', 'tag', 'release', 'publish', 'generate',
+  'apply', 'test', 'validate', 'close', 'connect', 'disconnect', 'restore', 'backup', 'do', 'make',
+  'call', 'ask', 'notify', 'switch', 'toggle', 'move', 'rename', 'find', 'search', 'wait',
+])
+const LEADING_CONNECTOR = /^(?:then|next|first|second|third|finally|afterward|afterwards|now|once done|after that|also)\b[,:]?\s*/i
+
+/** A list item's flattened text, the same way `headingText` reads a heading. */
+function listItemText(item: ListItem): string {
+  let text = ''
+  visit(item, 'text', (t: Text) => {
+    text += t.value
+  })
+  return text.trim()
+}
+
+/**
+ * Whether a list item reads like a procedural step rather than a question, a finding, or an
+ * option: a question ends in "?" and is never a step regardless of its first word; anything else
+ * counts as imperative only when its first real word (after stripping a leading connector) is a
+ * verb this project's docs actually use to give instructions.
+ */
+function looksImperative(text: string): boolean {
+  if (text.endsWith('?')) return false
+  const stripped = text.replace(LEADING_CONNECTOR, '')
+  const firstWord = stripped.match(/^[A-Za-z]+/)?.[0]?.toLowerCase()
+  return firstWord !== undefined && IMPERATIVE_VERBS.has(firstWord)
+}
 
 /**
  * A "money path": the conventional home of budget/estimate documents, or a
@@ -236,6 +278,16 @@ function checkMixedMode(doc: Doc, findings: Finding[]): void {
   } else if (kind === 'explanation') {
     visit(doc.tree, 'list', (node: List) => {
       if (!node.ordered) return
+      const items = node.children as ListItem[]
+      if (items.length === 0) return
+
+      // A numbered list is a procedure only when most of its items read as instructions — a list of
+      // open questions, findings, or options is a normal shape for an explanation document and must
+      // never be mistaken for one. Reporting on a shape that isn't actually a procedure is worse than
+      // reporting nothing: it teaches people to skim past every warning, including the real ones.
+      const imperativeCount = items.filter((item) => looksImperative(listItemText(item))).length
+      if (imperativeCount * 2 <= items.length) return
+
       findings.push({
         doc: doc.key,
         line: node.position?.start.line,

@@ -88,6 +88,17 @@ export function loadConfig(configPath: string): Config {
     clientUrl: raw.site.clientUrl?.replace(/\/+$/, ''),
   }
 
+  if (raw.vercel !== undefined) {
+    if (typeof raw.vercel !== 'object' || raw.vercel === null) {
+      throw new ConfigError(`${configPath}: \`vercel\` must be an object.`)
+    }
+    for (const key of ['internalProject', 'clientProject'] as const) {
+      if (raw.vercel[key] !== undefined && typeof raw.vercel[key] !== 'string') {
+        throw new ConfigError(`${configPath}: \`vercel.${key}\` must be a string.`)
+      }
+    }
+  }
+
   return {
     root: dirname(configPath),
     plane: {
@@ -98,6 +109,7 @@ export function loadConfig(configPath: string): Config {
     repos,
     docs: raw.docs,
     site,
+    vercel: raw.vercel,
     archify: raw.archify,
     sheets: raw.sheets,
   }

@@ -4,6 +4,7 @@ import { parseArgs } from 'node:util'
 import { globSync } from 'tinyglobby'
 import { buildLlmsTxt, checkDocs, checkExitCode, docStatusReport, writeLlmsTxt } from './check.js'
 import { findConfigPath, loadConfig, readProjectMeta } from './config.js'
+import { defaultCliRunner, deploy, parseDeployAudience } from './deploy.js'
 import { buildSite, docsForAudience, pageFileFor } from './emit/site.js'
 import { loadLock, saveLock } from './lock.js'
 import { parseDoc } from './parse.js'
@@ -189,6 +190,19 @@ export function formatFinding(f: { doc: string; line?: number; rule: string; mes
   return `${f.severity.toUpperCase().padEnd(5)} [${f.rule}] ${where}  ${f.message}`
 }
 
+/** The real yes/no prompt `contrail deploy` uses interactively (guard 2) — reads one line from
+ * stdin. Tests inject their own `ConfirmFn` instead; this is never exercised there. */
+async function readlineConfirm(message: string): Promise<boolean> {
+  const { createInterface } = await import('node:readline/promises')
+  const rl = createInterface({ input: process.stdin, output: process.stdout })
+  try {
+    const answer = await rl.question(message)
+    return /^y(es)?$/i.test(answer.trim())
+  } finally {
+    rl.close()
+  }
+}
+
 function requireApiKey(): string {
   const key = process.env.PLANE_API_KEY
   if (!key) {
@@ -207,6 +221,8 @@ export async function main(argv: string[]): Promise<number> {
       only: { type: 'string' },
       out: { type: 'string' },
       audience: { type: 'string' },
+      prod: { type: 'boolean', default: false },
+      yes: { type: 'boolean', default: false },
       strict: { type: 'boolean', default: false },
       index: { type: 'boolean', default: false },
       json: { type: 'boolean', default: false },
@@ -224,7 +240,8 @@ export async function main(argv: string[]): Promise<number> {
       'contrail init [--template agency-project] | build | status [--json] | ' +
         'publish [--dry-run] [--force] [--only <substring>] [--audience client] | ' +
         'site [--out <dir>] [--audience client] | check [--strict] [--index] [--audience client] [--json] | ' +
-        'scaffold <docKind> <path> [--json] | sheet pull <doc> | sheet push <doc> [--force]',
+        'scaffold <docKind> <path> [--json] | sheet pull <doc> | sheet push <doc> [--force] | ' +
+        'deploy [--audience client|internal] [--prod] [--dry-run] [--yes]',
     )
     return 0
   }
@@ -264,6 +281,46 @@ export async function main(argv: string[]): Promise<number> {
       const message = error instanceof Error ? error.message : String(error)
       if (values.json) console.log(JSON.stringify({ error: message }))
       else console.error(message)
+      return 1
+    }
+  }
+
+  if (command === 'deploy') {
+    let deployAudience: Audience
+    try {
+      deployAudience = parseDeployAudience(values.audience)
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error))
+      return 2
+    }
+
+    const config = loadConfig(findConfigPath(process.cwd()))
+    const allDocs = findDocs(config).map((path) => parseDoc(path, config.root))
+
+    try {
+      const result = await deploy({
+        config,
+        docs: allDocs,
+        audience: deployAudience,
+        prod: values.prod,
+        dryRun: values['dry-run'],
+        yes: values.yes,
+        outDir: siteOutDirFor(config, values.out),
+        runner: defaultCliRunner,
+        confirm: readlineConfirm,
+      })
+      if (result.status === 'declined') {
+        console.log('Deploy cancelled — nothing was published.')
+        return 1
+      }
+      if (result.status === 'deployed') {
+        console.log(
+          `Deployed ${result.docCount} document(s), ${result.fileCount} file(s), to the '${result.audience}' project.`,
+        )
+      }
+      return 0
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error))
       return 1
     }
   }

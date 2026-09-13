@@ -199,10 +199,39 @@ Background rationale, not steps.
   })
 
   it('fires when an explanation document contains numbered steps', () => {
-    const d = doc(`${FM('kind: explanation\n')}1. Do this
-2. Then this
+    const d = doc(`${FM('kind: explanation\n')}1. Run the migration script
+2. Restart the service
 `)
     expect(findingsFor('mixed-mode', checkDocs([d]))).toHaveLength(1)
+  })
+
+  it('does not fire on a numbered list of questions (FIX A)', () => {
+    const d = doc(`${FM('kind: explanation\n')}## Open questions raised
+
+1. Which SMS provider does Meridian already pay for?
+2. Who owns depot scanner firmware updates?
+3. Is the 30-minute quote hold a real business rule or an artifact of the phone process?
+4. What happens to a shipment the TMS rejects after the portal accepted it?
+`)
+    expect(findingsFor('mixed-mode', checkDocs([d]))).toHaveLength(0)
+  })
+
+  it('does not fire on a mixed list unless most items are imperative (FIX A)', () => {
+    // Only one of four items is imperative — not a majority.
+    const mostlyFindings = doc(`${FM('kind: explanation\n')}1. Latency spiked during the failover test
+2. Run the diagnostics script
+3. The dashboard shows a gap in the metrics
+4. Nobody noticed until the client asked
+`)
+    expect(findingsFor('mixed-mode', checkDocs([mostlyFindings]))).toHaveLength(0)
+
+    // Three of four items are imperative — a majority.
+    const mostlySteps = doc(`${FM('kind: explanation\n')}1. Open the admin console
+2. Click "rotate credentials"
+3. One step will fail if the token already expired
+4. Confirm the rotation in the audit log
+`)
+    expect(findingsFor('mixed-mode', checkDocs([mostlySteps]))).toHaveLength(1)
   })
 
   it('stays silent when kind is absent', () => {

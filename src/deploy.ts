@@ -1,0 +1,189 @@
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { spawn } from 'node:child_process'
+import { join } from 'node:path'
+import { buildSite, docsForAudience } from './emit/site.js'
+import type { Audience, Config, Doc } from './types.js'
+
+/** `contrail deploy`'s own audience flag accepts `internal` explicitly (unlike `site`/`check`/
+ * `publish`, whose `--audience` only ever narrows to `client`) — the deploy guard needs to know
+ * which of the two Vercel projects a build is headed for even for the default, full build. */
+export function parseDeployAudience(value: string | undefined): Audience {
+  if (value === undefined || value === 'internal') return 'internal'
+  if (value === 'client') return 'client'
+  throw new Error(`Unknown --audience '${value}'. Must be 'client' or 'internal'.`)
+}
+
+/** The `buildSite`/`docsForAudience` audience filter only ever narrows to `'client'` — an
+ * "internal" deploy is the ordinary unfiltered (everything) build, the same one `contrail site`
+ * produces with no `--audience` flag at all. */
+function siteAudienceFor(deployAudience: Audience): Audience | undefined {
+  return deployAudience === 'client' ? 'client' : undefined
+}
+
+export class DeployError extends Error {}
+
+interface LinkedProject {
+  projectId?: string
+  orgId?: string
+  projectName?: string
+}
+
+/** Reads the Vercel CLI's own link record — `.vercel/project.json`, written by `vercel link` (or a
+ * prior `vercel deploy`) — never anything contrail writes itself. `undefined` when the directory
+ * has never been linked. */
+export function readLinkedProject(root: string): LinkedProject | undefined {
+  const path = join(root, '.vercel', 'project.json')
+  if (!existsSync(path)) return undefined
+  return JSON.parse(readFileSync(path, 'utf8')) as LinkedProject
+}
+
+/** Which config field names the target Vercel project for a given audience. */
+function expectedProjectFor(config: Config, audience: Audience): string | undefined {
+  return audience === 'client' ? config.vercel?.clientProject : config.vercel?.internalProject
+}
+
+/**
+ * Guard 1 (the wrong-project guard): the failure it prevents — an internal build landing on the
+ * client's Vercel project, or vice versa — is public and irreversible, so this throws rather than
+ * returning a soft result. A mismatch names both the expected and the actual project, never just
+ * one, so whoever reads the error can fix either side without guessing.
+ */
+function assertProjectMatches(config: Config, audience: Audience, root: string): void {
+  const linked = readLinkedProject(root)
+  if (!linked) {
+    throw new DeployError(
+      `No .vercel/project.json found in ${root}. Run \`vercel link\` to connect this directory to a ` +
+        'Vercel project before deploying.',
+    )
+  }
+
+  const expected = expectedProjectFor(config, audience)
+  const configKey = audience === 'client' ? 'vercel.clientProject' : 'vercel.internalProject'
+  if (!expected) {
+    throw new DeployError(
+      `contrail.config.ts has no \`${configKey}\` configured — set it so contrail can verify a ${audience} ` +
+        'deploy is going to the right Vercel project.',
+    )
+  }
+
+  const actual = linked.projectName ?? linked.projectId ?? '(unknown)'
+  if (actual !== expected) {
+    throw new DeployError(
+      `Refusing to deploy: this directory is linked to Vercel project '${actual}', but \`${configKey}\` ` +
+        `expects '${expected}' for the ${audience} audience. Run \`vercel link\` against the right project, ` +
+        `or fix \`${configKey}\` in contrail.config.ts.`,
+    )
+  }
+}
+
+/** Every file under `dir`, counted recursively — what `--dry-run` reports as the file count, and
+ * what a real deploy is about to hand to `vercel deploy --prebuilt`. */
+function countFiles(dir: string): number {
+  let count = 0
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const path = join(dir, entry.name)
+    count += entry.isDirectory() ? countFiles(path) : 1
+  }
+  return count
+}
+
+export interface CliResult {
+  code: number
+}
+
+/** Shells out to an external CLI. Injected in tests so a test never invokes the real `vercel`
+ * binary; `defaultCliRunner` (below) is what `contrail deploy` actually runs with. */
+export type CliRunner = (command: string, args: string[]) => Promise<CliResult>
+
+/**
+ * `stdio: 'inherit'` is load-bearing: the Vercel CLI owns authentication end to end, including any
+ * login prompt or token it prints, and none of that may ever pass through contrail's own stdout,
+ * a log file, or a returned string — contrail must never read, store, or log a token.
+ */
+export function defaultCliRunner(command: string, args: string[]): Promise<CliResult> {
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn(command, args, { stdio: 'inherit' })
+    child.on('error', reject)
+    child.on('close', (code) => resolvePromise({ code: code ?? 1 }))
+  })
+}
+
+/** Asks a yes/no question and resolves the answer. Injected in tests; `cli.ts` supplies a real
+ * stdin-reading implementation for interactive use. */
+export type ConfirmFn = (message: string) => Promise<boolean>
+
+export interface DeployOptions {
+  config: Config
+  /** Every document contrail knows about — `deploy` builds the site itself, the same way
+   * `contrail site` does, so it needs the full set regardless of which audience narrows it. */
+  docs: Doc[]
+  audience?: string
+  prod?: boolean
+  dryRun?: boolean
+  yes?: boolean
+  /** Where to build the site before deploying. Defaults to `<config.root>/site`. */
+  outDir?: string
+  runner: CliRunner
+  /** Required only when guard 2 can actually fire (`--prod --audience client` without `--yes`). */
+  confirm?: ConfirmFn
+}
+
+export type DeployStatus = 'deployed' | 'dry-run' | 'declined'
+
+export interface DeployResult {
+  status: DeployStatus
+  audience: Audience
+  command: string[]
+  fileCount: number
+  docCount: number
+}
+
+/**
+ * `contrail deploy`: builds the site for the chosen audience, then — guards permitting — shells out
+ * to `vercel deploy --prebuilt` against the built directory. contrail never touches Vercel
+ * authentication itself; the CLI it invokes owns that entirely.
+ */
+export async function deploy(options: DeployOptions): Promise<DeployResult> {
+  const audience = parseDeployAudience(options.audience)
+  const outDir = options.outDir ?? join(options.config.root, 'site')
+
+  // Guard 1 runs before anything is built: a wrong-project deploy is the single worst outcome this
+  // tool can produce, so there is no reason to spend time building first.
+  assertProjectMatches(options.config, audience, options.config.root)
+
+  const emitted = docsForAudience(options.docs, siteAudienceFor(audience))
+  await buildSite({
+    docs: options.docs,
+    outDir,
+    cacheDir: join(options.config.root, '.contrail', 'cache'),
+    audience: siteAudienceFor(audience),
+  })
+
+  const command = ['deploy', '--prebuilt', outDir, ...(options.prod ? ['--prod'] : [])]
+  const fileCount = countFiles(outDir)
+
+  if (options.dryRun) {
+    console.log(`Would run: vercel ${command.join(' ')}`)
+    console.log(`${fileCount} file(s) built to ${outDir}`)
+    return { status: 'dry-run', audience, command, fileCount, docCount: emitted.length }
+  }
+
+  // Guard 2: a client production deploy is outward-facing and, in the way that matters, permanent —
+  // a client may read it the moment it lands. Print exactly what is about to publish and require an
+  // explicit yes, unless the caller already said `--yes`.
+  if (audience === 'client' && options.prod && !options.yes) {
+    console.log(`About to publish ${emitted.length} document(s) to the client production URL:`)
+    for (const doc of emitted) console.log(`  - ${doc.frontmatter.title}`)
+    const confirmed = options.confirm ? await options.confirm('Continue? [y/N] ') : false
+    if (!confirmed) {
+      return { status: 'declined', audience, command, fileCount, docCount: emitted.length }
+    }
+  }
+
+  const result = await options.runner('vercel', command)
+  if (result.code !== 0) {
+    throw new DeployError(`vercel exited with code ${result.code}.`)
+  }
+
+  return { status: 'deployed', audience, command, fileCount, docCount: emitted.length }
+}

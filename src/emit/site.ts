@@ -470,14 +470,34 @@ function buildSiteTree(docs: Doc[]): DirNode {
   return root
 }
 
+/**
+ * FIX B: a sub-directory's own children (e.g. `03-management`'s `meetings`, `decisions`,
+ * `change-requests`) are ordered by how often they are actually consulted, not alphabetically —
+ * `Change Requests · Decisions · Meetings` reads as arbitrary because it is. Declared once, here, so
+ * changing the priority never means hunting through the sort logic. `Overview` is not listed: it is
+ * always first because it is a separate pseudo-tab pushed ahead of this list (see `tabBarHtml`), not
+ * one of these named children. Anything not named here sorts alphabetically by title, after every
+ * named entry.
+ */
+const SUB_TAB_PRIORITY: readonly string[] = ['meetings', 'decisions', 'change-requests', 'qa-reports', 'releases']
+
 /** A node's child directory names worth showing, in display order: only those with at least one
  * document anywhere beneath them (Task 5, requirement 2 — an empty one gets no tab, no landing
  * page, not even in a full internal build, since it would still be empty there). The root uses the
- * five sections' fixed numeric order (`OTHER_KEY` last); every other node sorts alphabetically by
- * title — there is no equivalent "numeric" convention for an arbitrary sub-folder name. */
+ * five sections' fixed numeric order (`OTHER_KEY` last); every other node orders by
+ * `SUB_TAB_PRIORITY` first, falling back to alphabetical by title for anything unlisted. */
 function orderedChildNames(node: DirNode, isRoot: boolean): string[] {
   const present = [...node.children.keys()].filter((name) => totalDocCount(node.children.get(name)!) > 0)
-  if (!isRoot) return present.sort((a, b) => titleForSegment(a).localeCompare(titleForSegment(b)))
+  if (!isRoot) {
+    return present.sort((a, b) => {
+      const ai = SUB_TAB_PRIORITY.indexOf(a)
+      const bi = SUB_TAB_PRIORITY.indexOf(b)
+      if (ai === -1 && bi === -1) return titleForSegment(a).localeCompare(titleForSegment(b))
+      if (ai === -1) return 1
+      if (bi === -1) return -1
+      return ai - bi
+    })
+  }
 
   const known = Object.keys(SECTION_TITLES) as string[]
   const ordered = known.filter((key) => present.includes(key))
@@ -802,6 +822,16 @@ export function docsForAudience(docs: Doc[], audience: Audience | undefined): Do
   return docs.filter((doc) => doc.frontmatter.audience === audience)
 }
 
+/**
+ * FIX C: a directory's own scaffolded `README.md` (`INDEX_STUBS` in scaffold.ts) exists to explain
+ * what belongs in the folder — it is not a document in its own right. Excluded from the site build
+ * entirely so it never inflates a tab's count or shows up in a directory's document listing; the
+ * source file itself is untouched on disk, which is all `init` ever promised it.
+ */
+function isDirectoryReadme(doc: Doc): boolean {
+  return doc.key.split('/').pop() === 'README.md'
+}
+
 export async function buildSite(args: {
   /** Every document contrail knows about — not just the ones being emitted.
    * The full set is required even for a filtered build, so link defanging
@@ -821,7 +851,7 @@ export async function buildSite(args: {
   siteUrl?: string
 }): Promise<SiteResult> {
   const { docs, outDir, cacheDir, mmdc, archify, audience, projectName, siteUrl } = args
-  const emitted = docsForAudience(docs, audience)
+  const emitted = docsForAudience(docs, audience).filter((doc) => !isDirectoryReadme(doc))
   const emittedKeys = new Set(emitted.map((doc) => doc.key))
   const docPages = new Map(
     docs.map((doc) => [

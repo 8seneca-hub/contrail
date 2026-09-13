@@ -80,6 +80,15 @@ asset id.
 Record what you find in `docs/verification.md` — it is currently an unfilled template, since
 this has not yet been run against a real instance.
 
+## Deploying
+
+`contrail deploy [--audience client|internal] [--prod] [--dry-run] [--yes]` builds the site
+and shells out to the Vercel CLI, which owns authentication end to end — contrail never reads,
+stores, or logs a token. See [`docs/deploying.md`](docs/deploying.md) for the full first-day
+setup: creating the two Vercel projects (internal and client) from this one repository,
+configuring `vercel.internalProject`/`vercel.clientProject`, and the guard that refuses to
+publish an internal build to the client project (or vice versa).
+
 ## Known limitations
 
 - **Archiving a document loses its Plane page for good.** Plane's verified endpoint set has
