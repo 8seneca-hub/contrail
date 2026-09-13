@@ -66,16 +66,22 @@ export interface SiteEmitContext {
   /** This build's own deployed address (`site.internalUrl`/`site.clientUrl`), when configured — feeds
    * the canonical link tag on every page (Task 3). `undefined` keeps pages relative-link-only. */
   siteUrl?: string
-  /** The five sections (plus a virtual "other" bucket) that have at least one visible document in
-   * this build, in nav display order — what `sectionNavHtml` renders as tabs (Task 5). */
-  navSections: NavSection[]
+  /** The whole visible-document tree (Task 5/6): the five sections plus a virtual "other" bucket at
+   * the root, arbitrarily deep sub-directories under each. Drives every nav bar on every page — the
+   * persistent top-level one and, for a document/page sitting inside a branching directory, one
+   * more bar per level down to it (Task 6). Built once per build from the emitted documents. */
+  tree: DirNode
 }
 
-/** One tab in the persistent section nav: `key` is also the landing page's directory
- * (`${key}/index.html`), `title` its human label. */
-export interface NavSection {
-  key: string
-  title: string
+/**
+ * One directory's worth of the visible-document tree: the documents that live directly in it, and
+ * its sub-directories (each itself a `DirNode`, recursively — arbitrary depth). The root `DirNode`
+ * (see `buildSiteTree`) represents the whole build: its children are the five sections plus a
+ * virtual `other` bucket for documents outside all five; it never has `docs` of its own.
+ */
+export interface DirNode {
+  docs: Doc[]
+  children: Map<string, DirNode>
 }
 
 export interface DefangedLink {
@@ -373,23 +379,192 @@ function bannerHtml(ctx: SiteEmitContext): string {
   return ctx.isInternal ? `<div class="notice-banner" role="note">${escapeHtml(INTERNAL_NOTICE)}</div>\n` : ''
 }
 
+/** The virtual bucket for documents outside the five sections. Not a real `Section` — there is no
+ * `other/` directory in the source tree — but it gets a real landing page (`other/index.html`) the
+ * same way a real section does, so those documents stay reachable from the nav. */
+const OTHER_KEY = 'other'
+const OTHER_TITLE = 'Other'
+
+/** The pseudo-tab key for "this directory's own documents", when a directory has both direct
+ * documents and sub-directories (Task 6) — its landing page IS this tab's target. */
+const OVERVIEW_KEY = 'overview'
+const OVERVIEW_TITLE = 'Overview'
+
+/** The five sections' human-readable titles, in numeric (display) order — the fixed order the
+ * top-level nav always uses, `OTHER_KEY` last. Every other directory's children sort alphabetically
+ * by title instead (see `orderedChildNames`) — there is no equivalent fixed convention below it. */
+const SECTION_TITLES: Record<Exclude<Section, '00-meta'>, string> = {
+  '01-overview': 'Overview & Initiation',
+  '02-planning': 'Planning & Scope',
+  '03-management': 'Management & Operations',
+  '04-technical': 'Technical & Design',
+  '05-delivery': 'Testing & Handover',
+}
+
+/** Title-cases a directory-name path segment for display: `"qa-reports"` ->
+ * `"QA Reports"`, `"change-requests"` -> `"Change Requests"`. `qa` is the one
+ * segment whose plain capitalize-first-letter title case is wrong — it is
+ * an acronym. */
+function titleCaseSegment(segment: string): string {
+  return segment
+    .split('-')
+    .map((word) => (word.toLowerCase() === 'qa' ? 'QA' : word.charAt(0).toUpperCase() + word.slice(1)))
+    .join(' ')
+}
+
+/** A directory name's tab label: a section keeps its human title, `OTHER_KEY` reads "Other",
+ * anything else (an arbitrary-depth sub-folder) is title-cased from its own segment name. */
+function titleForSegment(name: string): string {
+  if (name === OTHER_KEY) return OTHER_TITLE
+  if (name in SECTION_TITLES) return SECTION_TITLES[name as Exclude<Section, '00-meta'>]
+  return titleCaseSegment(name)
+}
+
+function emptyDirNode(): DirNode {
+  return { docs: [], children: new Map() }
+}
+
+/** The total number of documents a directory holds, including every descendant — what a tab's
+ * count (Task 6: `Meetings 12`) shows, and what decides whether a directory has anything to link to
+ * at all (an audience-filtered build must render no tab and no landing page for an empty one). */
+function totalDocCount(node: DirNode): number {
+  let total = node.docs.length
+  for (const child of node.children.values()) total += totalDocCount(child)
+  return total
+}
+
+/** Where a document sits in the site tree: the five real sections keep their own directory as the
+ * first segment; anything else is bucketed under the virtual `other/` the same way `pageFileFor`
+ * never creates a real `other/` directory in the *source* tree, only in this nav. Shared by
+ * `buildSiteTree` (building the tree) and `emitSite` (finding a document's own place in it), so the
+ * two can never disagree about where a document lives. */
+function docDirSegments(key: string): string[] {
+  const parts = key.replace(/^docs\//, '').split('/')
+  parts.pop() // the filename itself is never a directory segment
+  if (parts[0] !== undefined && (SECTIONS as readonly string[]).includes(parts[0])) return parts
+  return [OTHER_KEY, ...parts]
+}
+
 /**
- * Task 5's persistent section nav: plain links to each section's landing page
- * (`${key}/index.html`), not an ARIA tabs widget — real navigation to real pages needs no
- * JavaScript to work, which a `role="tab"` pattern would (arrow-key handling, panel toggling).
- * The active page's link carries `aria-current="page"`, the correct semantics for "you are here"
- * navigation. `ctx.navSections` already excludes any section with no visible document in this
- * build (Task 5, requirement 2), so an empty client build renders no nav at all.
+ * Builds the whole visible-document tree (Task 5/6) from a flat document list: `00-meta` documents
+ * are machine metadata and never enter it; every other document is placed by `docDirSegments`,
+ * arbitrarily deep. The root itself never carries direct documents — a document outside the five
+ * sections goes into the virtual `other` child instead, so every "is this the site root, with no
+ * `Overview` tab of its own" special case reduces to the ordinary "does this node have `docs`" check.
  */
-function sectionNavHtml(ctx: SiteEmitContext, activeKey: string | undefined, rootPrefix: string): string {
-  if (ctx.navSections.length === 0) return ''
-  const links = ctx.navSections
-    .map(({ key, title }) => {
+function buildSiteTree(docs: Doc[]): DirNode {
+  const root = emptyDirNode()
+  for (const doc of docs) {
+    if (doc.key.replace(/^docs\//, '').split('/')[0] === '00-meta') continue
+    let node = root
+    for (const segment of docDirSegments(doc.key)) {
+      let child = node.children.get(segment)
+      if (!child) {
+        child = emptyDirNode()
+        node.children.set(segment, child)
+      }
+      node = child
+    }
+    node.docs.push(doc)
+  }
+  return root
+}
+
+/** A node's child directory names worth showing, in display order: only those with at least one
+ * document anywhere beneath them (Task 5, requirement 2 — an empty one gets no tab, no landing
+ * page, not even in a full internal build, since it would still be empty there). The root uses the
+ * five sections' fixed numeric order (`OTHER_KEY` last); every other node sorts alphabetically by
+ * title — there is no equivalent "numeric" convention for an arbitrary sub-folder name. */
+function orderedChildNames(node: DirNode, isRoot: boolean): string[] {
+  const present = [...node.children.keys()].filter((name) => totalDocCount(node.children.get(name)!) > 0)
+  if (!isRoot) return present.sort((a, b) => titleForSegment(a).localeCompare(titleForSegment(b)))
+
+  const known = Object.keys(SECTION_TITLES) as string[]
+  const ordered = known.filter((key) => present.includes(key))
+  if (present.includes(OTHER_KEY)) ordered.push(OTHER_KEY)
+  return ordered
+}
+
+/**
+ * One tab bar (Task 5/6): plain links to `Overview` (this directory's own documents, when it has
+ * any) and to each non-empty child directory's landing page, each carrying its document count
+ * (`Meetings 12`). Not an ARIA tabs widget — real navigation to real pages needs no JavaScript,
+ * which a `role="tab"` pattern would (arrow-key handling, panel toggling); the active link instead
+ * carries `aria-current="page"`, the correct semantics for "you are here" navigation. Renders `''`
+ * when there is nothing to show a tab for (a leaf directory, or an empty build).
+ */
+function tabBarHtml(node: DirNode, hrefPrefix: string, rootPrefix: string, activeKey: string, isRoot: boolean): string {
+  const tabs: Array<{ key: string; title: string; count: number; href: string }> = []
+  if (!isRoot && node.docs.length > 0) {
+    tabs.push({ key: OVERVIEW_KEY, title: OVERVIEW_TITLE, count: node.docs.length, href: `${rootPrefix}${hrefPrefix}index.html` })
+  }
+  for (const name of orderedChildNames(node, isRoot)) {
+    tabs.push({
+      key: name,
+      title: titleForSegment(name),
+      count: totalDocCount(node.children.get(name)!),
+      href: `${rootPrefix}${hrefPrefix}${name}/index.html`,
+    })
+  }
+  if (tabs.length === 0) return ''
+
+  const links = tabs
+    .map(({ key, title, count, href }) => {
       const current = key === activeKey ? ' aria-current="page"' : ''
-      return `<a href="${rootPrefix}${key}/index.html"${current}>${escapeHtml(title)}</a>`
+      return `<a href="${escapeHtml(href)}"${current}>${escapeHtml(title)} <span class="tab-count">${count}</span></a>`
     })
     .join('\n')
-  return `<nav class="section-nav" aria-label="Documentation sections">\n${links}\n</nav>\n`
+  const cls = isRoot ? 'section-nav' : 'section-nav sub-nav'
+  return `<nav class="${cls}" aria-label="Documentation sections">\n${links}\n</nav>\n`
+}
+
+/**
+ * Every nav bar for one page (Task 5/6): the persistent top-level bar, then one more bar per
+ * directory level the page descends through that itself branches. Two callers, two different
+ * `segments`:
+ *
+ * - A document page passes its own containing directory's segments (fixed — the document really
+ *   does live there) with `autoExtend: false`: descent follows exactly that path and stops the
+ *   instant it runs out, whether or not the directory it lands in has further children.
+ * - A directory's own landing page passes its own segments with `autoExtend: true`: if the target
+ *   directory has no direct documents of its own, descent keeps going into its first non-empty
+ *   child (recursively) rather than stopping on a bar with nothing selected — the same "first
+ *   non-empty section" rule the site root already used before Task 6, generalized to any depth.
+ *
+ * Returns the rendered bars and the `DirNode` whose own documents are the page's main content —
+ * for a document page this return value is unused; for a landing page it is guaranteed to have at
+ * least one document, since `autoExtend` only ever steps into a child with `totalDocCount > 0`.
+ */
+function renderNavStack(
+  root: DirNode,
+  segments: string[],
+  rootPrefix: string,
+  autoExtend: boolean,
+): { barsHtml: string; contentNode: DirNode } {
+  let node = root
+  let hrefPrefix = ''
+  let bars = ''
+  let isRoot = true
+  let i = 0
+
+  for (;;) {
+    let activeKey = segments[i]
+    if (activeKey === undefined && autoExtend && node.docs.length === 0 && node.children.size > 0) {
+      activeKey = orderedChildNames(node, isRoot)[0]
+    }
+    if (isRoot || node.children.size > 0) {
+      bars += tabBarHtml(node, hrefPrefix, rootPrefix, activeKey ?? OVERVIEW_KEY, isRoot)
+    }
+    if (activeKey === undefined) break
+    const child = node.children.get(activeKey)
+    if (!child) break // a document's own path always exists in the tree it was built from
+    node = child
+    hrefPrefix = `${hrefPrefix}${activeKey}/`
+    isRoot = false
+    i++
+  }
+
+  return { barsHtml: bars, contentNode: node }
 }
 
 /**
@@ -449,10 +624,8 @@ export function emitSite(doc: Doc, ctx: SiteEmitContext): string {
   }
 
   const { title, summary, status } = doc.frontmatter
-  // `?? 'other'` mirrors `groupBySection`: a document outside the five sections is grouped (and
-  // navigable) under the virtual "other" tab, so its own page still marks a tab active when one exists.
-  const activeSection = sectionGroupFor(doc.key)?.section ?? OTHER_KEY
-  const body = `${bannerHtml(ctx)}${sectionNavHtml(ctx, activeSection, rootPrefix)}<header class="page-header">
+  const { barsHtml } = renderNavStack(ctx.tree, docDirSegments(doc.key), rootPrefix, false)
+  const body = `${bannerHtml(ctx)}${barsHtml}<header class="page-header">
 <p class="breadcrumb"><a href="${rootPrefix}index.html">&larr; All documents</a></p>
 <h1>${escapeHtml(title)}</h1>
 <p class="summary">${escapeHtml(summary)}</p>
@@ -468,52 +641,10 @@ ${bodyHtml}
 /** The five sections' human-readable titles, in numeric (display) order.
  * `00-meta` is deliberately absent — it is machine metadata, never a
  * document, and is excluded from the index entirely (see `emitIndex`). */
-const SECTION_TITLES: Record<Exclude<Section, '00-meta'>, string> = {
-  '01-overview': 'Overview & Initiation',
-  '02-planning': 'Planning & Scope',
-  '03-management': 'Management & Operations',
-  '04-technical': 'Technical & Design',
-  '05-delivery': 'Testing & Handover',
-}
-
-/** Title-cases a directory-name path segment for display: `"qa-reports"` ->
- * `"QA Reports"`, `"change-requests"` -> `"Change Requests"`. `qa` is the one
- * segment whose plain capitalize-first-letter title case is wrong — it is
- * an acronym. */
-function titleCaseSegment(segment: string): string {
-  return segment
-    .split('-')
-    .map((word) => (word.toLowerCase() === 'qa' ? 'QA' : word.charAt(0).toUpperCase() + word.slice(1)))
-    .join(' ')
-}
-
-/**
- * The section (and, when the document sits inside one, its immediate
- * sub-directory) a document belongs to — read from its own path, not
- * `frontmatter.section`, so the index groups by where a document actually
- * lives even when nobody has classified it. `undefined` means "not inside
- * one of the five sections" (grouped into "Other" by `emitIndex`); `00-meta`
- * is handled separately by `emitIndex` itself, since it is excluded outright
- * rather than folded into "Other".
- */
-function sectionGroupFor(key: string): { section: Exclude<Section, '00-meta'>; sub?: string } | undefined {
-  const segments = key.replace(/^docs\//, '').split('/')
-  const top = segments[0]
-  if (top === undefined || top === '00-meta' || !(SECTIONS as readonly string[]).includes(top)) return undefined
-  const sub = segments.length > 2 ? segments[1] : undefined
-  return { section: top as Exclude<Section, '00-meta'>, sub }
-}
-
-/** The virtual sixth "tab": documents outside the five sections. Not a real `Section` — there is no
- * `other/` directory in the source tree — but it gets a real landing page (`other/index.html`) the
- * same way a real section does, so those documents stay reachable from the nav. */
-const OTHER_KEY = 'other'
-const OTHER_TITLE = 'Other'
-
 /** A relative href from the page currently being rendered (`fromPageFile`) to a document's own
- * page — never the bare root-relative `pageFileFor`, because this markup is shared between the
- * root index (at the site root) and a section's own landing page (one directory down): the same
- * document needs a different href depending on where it is being listed from. */
+ * page — never the bare root-relative `pageFileFor`, because this markup is shared across every
+ * depth of landing page: the same document needs a different href depending on where it is being
+ * listed from. */
 function docRow(doc: Doc, fromPageFile: string): string {
   const href = relativeHref(fromPageFile, pageFileFor(doc.key))
   return `<li class="doc-entry">
@@ -527,105 +658,112 @@ function docListHtml(docs: Doc[], fromPageFile: string): string {
   return `<ul class="doc-list">\n${docs.map((doc) => docRow(doc, fromPageFile)).join('\n')}\n</ul>`
 }
 
-interface SectionGroup {
-  direct: Doc[]
-  subgroups: Map<string, Doc[]>
+/** Task 6's three ordering rules, detected from the filename the author actually chose — never
+ * from `docKind`, which is a taxonomy guess. Checked in this order because a date-prefixed name
+ * (`2026-08-11-...`) would otherwise also match the more permissive number-prefix pattern. */
+const DATE_PREFIX = /^(\d{4}-\d{2}-\d{2})-/
+const NUMBER_PREFIX = /^(\d+)-/
+
+interface ClassifiedDoc {
+  doc: Doc
+  kind: 'date' | 'number' | 'alpha'
+  /** `kind: 'date'` → the `YYYY-MM-DD` prefix; `kind: 'number'` → the parsed leading number;
+   * `kind: 'alpha'` → the document's own title. Whatever `orderLeaf` sorts this group by. */
+  sortKey: string | number
+}
+
+function classifyDoc(doc: Doc): ClassifiedDoc {
+  const filename = doc.key.split('/').pop()!
+  const dateMatch = DATE_PREFIX.exec(filename)
+  if (dateMatch) return { doc, kind: 'date', sortKey: dateMatch[1]! }
+  const numberMatch = NUMBER_PREFIX.exec(filename)
+  if (numberMatch) return { doc, kind: 'number', sortKey: Number(numberMatch[1]) }
+  return { doc, kind: 'alpha', sortKey: doc.frontmatter.title }
 }
 
 /**
- * Groups documents by section, in numeric order, with nested sub-directories
- * (`03-management/meetings/`, ...) as nested groups under their section rather than as siblings —
- * the reader can then see where in the five-section structure they are. Documents outside the five
- * sections are returned separately (`other`); `00-meta` documents (machine metadata, not
- * documentation) are excluded entirely. Shared by the index (Task 5: shows its first non-empty
- * section) and every section's own landing page.
+ * Orders one leaf list of documents (Task 6): date-prefixed files newest first (you want this
+ * week's meeting, not the kickoff from six months ago), number-prefixed files ascending (ADR 0001
+ * is the foundation the rest build on), everything else alphabetically by title. A folder that
+ * mixes patterns — rare in practice, since a folder's own convention tends to be uniform — renders
+ * each group in that fixed order (dates, then numbers, then everything else) rather than
+ * interleaving them, so the ordering within each group stays meaningful instead of arbitrary.
  */
-function groupBySection(docs: Doc[]): { bySection: Map<Exclude<Section, '00-meta'>, SectionGroup>; other: Doc[] } {
-  const bySection = new Map<Exclude<Section, '00-meta'>, SectionGroup>()
-  const other: Doc[] = []
+function orderLeaf(docs: Doc[]): ClassifiedDoc[] {
+  const classified = docs.map(classifyDoc)
+  const dates = classified.filter((c): c is ClassifiedDoc & { sortKey: string } => c.kind === 'date')
+  const numbers = classified.filter((c): c is ClassifiedDoc & { sortKey: number } => c.kind === 'number')
+  const alphas = classified.filter((c): c is ClassifiedDoc & { sortKey: string } => c.kind === 'alpha')
 
-  for (const doc of docs) {
-    if (doc.key.replace(/^docs\//, '').split('/')[0] === '00-meta') continue
+  dates.sort((a, b) => b.sortKey.localeCompare(a.sortKey))
+  numbers.sort((a, b) => a.sortKey - b.sortKey)
+  alphas.sort((a, b) => a.sortKey.localeCompare(b.sortKey))
 
-    const group = sectionGroupFor(doc.key)
-    if (!group) {
-      other.push(doc)
-      continue
-    }
-    let entry = bySection.get(group.section)
-    if (!entry) {
-      entry = { direct: [], subgroups: new Map() }
-      bySection.set(group.section, entry)
-    }
-    if (group.sub === undefined) {
-      entry.direct.push(doc)
-    } else {
-      const list = entry.subgroups.get(group.sub) ?? []
-      list.push(doc)
-      entry.subgroups.set(group.sub, list)
+  return [...dates, ...numbers, ...alphas]
+}
+
+/** Above this many documents, a date-prefixed run groups by year for scanning (Task 6) — below it,
+ * one flat list is still easy to read in one pass. */
+const YEAR_GROUP_THRESHOLD = 25
+
+/**
+ * Buckets an already newest-first `dates` list by its `YYYY` year, newest year first. Insertion
+ * order alone gives that: the input is already sorted newest-first, so the first time a year is
+ * seen is always its most recent document, and a `Map` preserves the order keys were first added.
+ */
+function groupDatesByYear(dates: Array<ClassifiedDoc & { sortKey: string }>): Array<[string, Doc[]]> {
+  const byYear = new Map<string, Doc[]>()
+  for (const { doc, sortKey } of dates) {
+    const year = sortKey.slice(0, 4)
+    const list = byYear.get(year) ?? []
+    list.push(doc)
+    byYear.set(year, list)
+  }
+  return [...byYear.entries()]
+}
+
+/**
+ * Renders one leaf document list (Task 6): ordered per `orderLeaf`, and — only past
+ * `YEAR_GROUP_THRESHOLD` documents, and only for the date-prefixed portion — grouped under `<h3>`
+ * year headings. Grouping is for scanning, never for hiding: every document still renders, nothing
+ * collapses behind a click. Any number-prefixed or alphabetical documents in the same over-threshold
+ * folder still render, just after the year groups and still ungrouped — Task 6 groups "date-prefixed
+ * documents" specifically, not every long list regardless of its ordering rule.
+ */
+function leafListHtml(docs: Doc[], fromPageFile: string): string {
+  if (docs.length === 0) return ''
+  const ordered = orderLeaf(docs)
+
+  if (docs.length > YEAR_GROUP_THRESHOLD) {
+    const dates = ordered.filter((c): c is ClassifiedDoc & { sortKey: string } => c.kind === 'date')
+    if (dates.length > 0) {
+      const rest = ordered.filter((c) => c.kind !== 'date').map((c) => c.doc)
+      const yearHtml = groupDatesByYear(dates)
+        .map(([year, list]) => `<h3>${escapeHtml(year)}</h3>\n${docListHtml(list, fromPageFile)}`)
+        .join('\n')
+      const restHtml = rest.length > 0 ? docListHtml(rest, fromPageFile) : ''
+      return [yearHtml, restHtml].filter((html) => html.length > 0).join('\n')
     }
   }
 
-  return { bySection, other }
-}
-
-function sectionGroupHtml(title: string, entry: SectionGroup, fromPageFile: string): string {
-  const direct = entry.direct.length > 0 ? docListHtml(entry.direct, fromPageFile) : ''
-  const subgroups = [...entry.subgroups.entries()]
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([sub, list]) => `<h3>${escapeHtml(titleCaseSegment(sub))}</h3>\n${docListHtml(list, fromPageFile)}`)
-    .join('\n')
-  return `<section class="doc-section">
-<h2>${escapeHtml(title)}</h2>
-${direct}
-${subgroups}
-</section>`
-}
-
-/** The five sections (in numeric order) plus the virtual `OTHER_KEY`, restricted to whichever have
- * at least one visible document in this build — Task 5, requirement 2: a section a client build
- * excludes entirely gets no tab and no landing page, not even an empty one, so its mere existence
- * never leaks. */
-function navSectionsFor(grouped: ReturnType<typeof groupBySection>): NavSection[] {
-  const sections: NavSection[] = []
-  for (const key of Object.keys(SECTION_TITLES) as Array<keyof typeof SECTION_TITLES>) {
-    const entry = grouped.bySection.get(key)
-    if (entry && (entry.direct.length > 0 || entry.subgroups.size > 0)) {
-      sections.push({ key, title: SECTION_TITLES[key] })
-    }
-  }
-  if (grouped.other.length > 0) sections.push({ key: OTHER_KEY, title: OTHER_TITLE })
-  return sections
-}
-
-/** One section's rendered body — reused by the index (its first non-empty section) and by that
- * section's own landing page — or `''` for a key with nothing to show (an empty/unknown section). */
-function sectionBodyFor(
-  key: string,
-  grouped: ReturnType<typeof groupBySection>,
-  fromPageFile: string,
-): string {
-  if (key === OTHER_KEY) {
-    return grouped.other.length > 0
-      ? sectionGroupHtml(OTHER_TITLE, { direct: grouped.other, subgroups: new Map() }, fromPageFile)
-      : ''
-  }
-  const entry = grouped.bySection.get(key as Exclude<Section, '00-meta'>)
-  return entry ? sectionGroupHtml(SECTION_TITLES[key as Exclude<Section, '00-meta'>], entry, fromPageFile) : ''
+  return docListHtml(
+    ordered.map((c) => c.doc),
+    fromPageFile,
+  )
 }
 
 /**
  * The site root: Task 1's heading (the project name, not the generic "Documentation") over Task
- * 5's tabbed view — the first non-empty section's documents, with the same persistent nav every
- * other page carries. A build with nothing to show (an empty client build) still renders the
- * banner/heading shell, just with no nav and no section body.
+ * 5/6's tabbed view — the top-level nav, any nested bars the default path descends through, and
+ * that path's own document list. A build with nothing to show (an empty client build) still
+ * renders the banner/heading shell, just with no nav and no document list.
  */
-function emitIndex(ctx: SiteEmitContext, grouped: ReturnType<typeof groupBySection>): string {
-  const first = ctx.navSections[0]
+function emitIndex(ctx: SiteEmitContext): string {
   const heading = ctx.projectName ?? 'Documentation'
-  const mainHtml = first ? sectionBodyFor(first.key, grouped, 'index.html') : ''
+  const { barsHtml, contentNode } = renderNavStack(ctx.tree, [], '', true)
+  const mainHtml = leafListHtml(contentNode.docs, 'index.html')
 
-  const body = `${bannerHtml(ctx)}${sectionNavHtml(ctx, first?.key, '')}<header class="page-header">
+  const body = `${bannerHtml(ctx)}${barsHtml}<header class="page-header">
 <h1>${escapeHtml(heading)}</h1>
 </header>
 <main>
@@ -635,14 +773,19 @@ ${mainHtml}
   return pageShell(indexTitleFor(heading, ctx), body, '', canonicalFor(ctx, 'index.html'))
 }
 
-/** A section's own landing page (Task 5): everything the index shows for its first section, but
- * for any one section, reachable directly and from the persistent nav on every other page. */
-function emitSectionPage(ctx: SiteEmitContext, key: string, title: string, grouped: ReturnType<typeof groupBySection>): string {
-  const pageFile = `${key}/index.html`
+/**
+ * Any other directory's own landing page (Task 5/6) — a section (`03-management/index.html`), or
+ * an arbitrarily deep sub-folder within one (`03-management/meetings/index.html`) — reachable
+ * directly and from the nav bar on every other page in its own subtree.
+ */
+function emitLandingPage(ctx: SiteEmitContext, segments: string[]): string {
+  const pageFile = `${segments.join('/')}/index.html`
   const rootPrefix = rootPrefixFor(pageFile)
-  const mainHtml = sectionBodyFor(key, grouped, pageFile)
+  const { barsHtml, contentNode } = renderNavStack(ctx.tree, segments, rootPrefix, true)
+  const mainHtml = leafListHtml(contentNode.docs, pageFile)
+  const title = titleForSegment(segments[segments.length - 1]!)
 
-  const body = `${bannerHtml(ctx)}${sectionNavHtml(ctx, key, rootPrefix)}<header class="page-header">
+  const body = `${bannerHtml(ctx)}${barsHtml}<header class="page-header">
 <p class="breadcrumb"><a href="${rootPrefix}index.html">&larr; All documents</a></p>
 </header>
 <main>
@@ -720,8 +863,7 @@ export async function buildSite(args: {
   }
 
   const defangedLinks: DefangedLink[] = []
-  const grouped = groupBySection(emitted)
-  const navSections = navSectionsFor(grouped)
+  const tree = buildSiteTree(emitted)
   const ctx: SiteEmitContext = {
     diagramPaths,
     assetPaths,
@@ -733,7 +875,7 @@ export async function buildSite(args: {
     isInternal: audience !== 'client',
     projectName,
     siteUrl,
-    navSections,
+    tree,
   }
   const pages: string[] = []
   for (const doc of emitted) {
@@ -743,15 +885,22 @@ export async function buildSite(args: {
     pages.push(doc.key)
   }
 
-  writeFileSync(join(outDir, 'index.html'), emitIndex(ctx, grouped))
+  writeFileSync(join(outDir, 'index.html'), emitIndex(ctx))
 
-  // Task 5: one landing page per non-empty section/tab, so the nav on every other page has
-  // somewhere real to point. `navSections` already excludes anything with no visible document.
-  for (const { key, title } of navSections) {
-    const dir = join(outDir, key)
-    mkdirSync(dir, { recursive: true })
-    writeFileSync(join(dir, 'index.html'), emitSectionPage(ctx, key, title, grouped))
+  // Task 5/6: one landing page per non-empty directory in the tree, at every depth, so the nav on
+  // every other page has somewhere real to point — recursing depth-first skips any (sub-)directory
+  // with no visible document at all in this build (Task 5, requirement 2: no tab, no landing page).
+  const writeLandingPages = (node: DirNode, segments: string[]): void => {
+    for (const [name, child] of node.children) {
+      if (totalDocCount(child) === 0) continue
+      const childSegments = [...segments, name]
+      const dir = join(outDir, ...childSegments)
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(join(dir, 'index.html'), emitLandingPage(ctx, childSegments))
+      writeLandingPages(child, childSegments)
+    }
   }
+  writeLandingPages(tree, [])
 
   return { outDir, pages, diagrams: diagramCount, defangedLinks }
 }

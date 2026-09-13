@@ -133,6 +133,26 @@ footer {
   text-underline-offset: 0.25em;
 }
 
+/* A nested tab bar (Task 6: one per directory level below the top): visually one step quieter and
+   tighter than the persistent top-level bar it stacks under, without a second border doubling up. */
+.section-nav.sub-nav {
+  padding-block: 0.6rem;
+  border-bottom: none;
+  border-top: 1px solid var(--border);
+}
+
+/* The document count on a tab (Task 6: `Meetings 12`) — a quiet badge, never competing with the
+   label itself for attention. */
+.tab-count {
+  font-weight: 400;
+  font-size: 0.85em;
+  color: var(--fg-muted);
+}
+
+.section-nav a[aria-current='page'] .tab-count {
+  color: inherit;
+}
+
 .page-header {
   padding-block: 2rem 1rem;
 }

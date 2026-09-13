@@ -38,11 +38,15 @@ describe('Task 5: persistent section nav', () => {
     await buildSite({ docs: [overview, management], outDir, cacheDir: join(root, '.cache') })
 
     const briefPage = readFileSync(join(outDir, '01-overview', 'brief.html'), 'utf8')
-    expect(briefPage).toContain('<a href="../01-overview/index.html" aria-current="page">Overview &amp; Initiation</a>')
+    expect(briefPage).toContain(
+      '<a href="../01-overview/index.html" aria-current="page">Overview &amp; Initiation <span class="tab-count">1</span></a>',
+    )
     expect(briefPage).not.toContain('aria-current="page">Management &amp; Operations')
 
     const budgetPage = readFileSync(join(outDir, '03-management', 'budget.html'), 'utf8')
-    expect(budgetPage).toContain('<a href="../03-management/index.html" aria-current="page">Management &amp; Operations</a>')
+    expect(budgetPage).toContain(
+      '<a href="../03-management/index.html" aria-current="page">Management &amp; Operations <span class="tab-count">1</span></a>',
+    )
     expect(budgetPage).not.toContain('aria-current="page">Overview &amp; Initiation')
   })
 
