@@ -81,6 +81,22 @@ export interface Config {
   /** Google Sheets service-account credentials. `GOOGLE_APPLICATION_CREDENTIALS` takes precedence
    * over `credentialsPath` when both are set — see `src/sheets/client.ts:credentialsPathFor`. */
   sheets?: { credentialsPath?: string }
+  /**
+   * `contrail deploy --target railway`'s destination: an internal build lands at
+   * `<internalPath>/<slug>`, a client build at `<clientPath>/<slug>`. `railway` is the only
+   * supported target today — see the note on `DeployTransport` in `src/deploy/transport.ts` for
+   * why the transport is pluggable rather than hard-coded to it.
+   */
+  selfhost?: {
+    target: 'railway'
+    volume: string
+    service?: string
+    /** Per-project subdirectory. Must match `^[a-z0-9][a-z0-9-]*$` — it becomes a path segment,
+     * so it must not be able to escape via `..` or a leading `/`. */
+    slug: string
+    internalPath: string
+    clientPath: string
+  }
 }
 
 export interface RenderedDiagram {

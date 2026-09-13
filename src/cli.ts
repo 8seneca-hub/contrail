@@ -5,7 +5,9 @@ import { globSync } from 'tinyglobby'
 import { buildLlmsTxt, checkDocs, checkExitCode, docStatusReport, writeLlmsTxt } from './check.js'
 import { findConfigPath, loadConfig, readProjectMeta } from './config.js'
 import { contextEmptyMessage, contextQuery, contextRule, isTaskType, TASK_TYPES, type TaskType } from './context.js'
-import { defaultCliRunner, deploy, parseDeployAudience } from './deploy.js'
+import { defaultCliRunner, deploy, parseDeployAudience, parseDeployTarget } from './deploy.js'
+import { createRailwayTransport } from './deploy/railway.js'
+import type { DeployTransport } from './deploy/transport.js'
 import { buildSite, docsForAudience, pageFileFor } from './emit/site.js'
 import { loadLock, saveLock } from './lock.js'
 import { parseDoc } from './parse.js'
@@ -222,6 +224,7 @@ export async function main(argv: string[]): Promise<number> {
       only: { type: 'string' },
       out: { type: 'string' },
       audience: { type: 'string' },
+      target: { type: 'string' },
       prod: { type: 'boolean', default: false },
       yes: { type: 'boolean', default: false },
       strict: { type: 'boolean', default: false },
@@ -244,7 +247,7 @@ export async function main(argv: string[]): Promise<number> {
         'publish [--dry-run] [--force] [--only <substring>] [--audience client] | ' +
         'site [--out <dir>] [--audience client] | check [--strict] [--index] [--audience client] [--json] | ' +
         'scaffold <docKind> <path> [--json] | sheet pull <doc> | sheet push <doc> [--force] | ' +
-        'deploy [--audience client|internal] [--prod] [--dry-run] [--yes] | ' +
+        'deploy [--audience client|internal] [--target vercel|railway] [--prod] [--dry-run] [--yes] | ' +
         `context [--task <${TASK_TYPES.join('|')}>] [keywords...] [--audience client] [--json] [--limit <n>]`,
     )
     return 0
@@ -291,8 +294,10 @@ export async function main(argv: string[]): Promise<number> {
 
   if (command === 'deploy') {
     let deployAudience: Audience
+    let deployTarget: ReturnType<typeof parseDeployTarget>
     try {
       deployAudience = parseDeployAudience(values.audience)
+      deployTarget = parseDeployTarget(values.target)
     } catch (error) {
       console.error(error instanceof Error ? error.message : String(error))
       return 2
@@ -301,26 +306,34 @@ export async function main(argv: string[]): Promise<number> {
     const config = loadConfig(findConfigPath(process.cwd()))
     const allDocs = findDocs(config).map((path) => parseDoc(path, config.root))
 
+    // Only 'railway' needs a transport — `deploy()` itself reports the actionable config error when
+    // `deployTarget` is 'railway' but `config.selfhost` is absent.
+    const transport: DeployTransport | undefined =
+      deployTarget === 'railway' && config.selfhost
+        ? createRailwayTransport(defaultCliRunner, { volume: config.selfhost.volume, service: config.selfhost.service })
+        : undefined
+
     try {
       const result = await deploy({
         config,
         docs: allDocs,
         audience: deployAudience,
+        target: deployTarget,
         prod: values.prod,
         dryRun: values['dry-run'],
         yes: values.yes,
         outDir: siteOutDirFor(config, values.out),
         runner: defaultCliRunner,
         confirm: readlineConfirm,
+        transport,
       })
       if (result.status === 'declined') {
         console.log('Deploy cancelled — nothing was published.')
         return 1
       }
       if (result.status === 'deployed') {
-        console.log(
-          `Deployed ${result.docCount} document(s), ${result.fileCount} file(s), to the '${result.audience}' project.`,
-        )
+        const destination = result.remotePath ?? `the '${result.audience}' project`
+        console.log(`Deployed ${result.docCount} document(s), ${result.fileCount} file(s), to ${destination}.`)
       }
       return 0
     } catch (error) {

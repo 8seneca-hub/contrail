@@ -99,6 +99,26 @@ export function loadConfig(configPath: string): Config {
     }
   }
 
+  // Shape only — the business rules (slug pattern, internalPath !== clientPath) are deploy-time
+  // guards in src/deploy.ts, the same split as `vercel` above (config.ts checks types; deploy.ts
+  // checks that a build can't land somewhere it shouldn't).
+  if (raw.selfhost !== undefined) {
+    if (typeof raw.selfhost !== 'object' || raw.selfhost === null) {
+      throw new ConfigError(`${configPath}: \`selfhost\` must be an object.`)
+    }
+    if (raw.selfhost.target !== 'railway') {
+      throw new ConfigError(`${configPath}: \`selfhost.target\` must be 'railway'.`)
+    }
+    for (const key of ['volume', 'slug', 'internalPath', 'clientPath'] as const) {
+      if (typeof raw.selfhost[key] !== 'string' || raw.selfhost[key].length === 0) {
+        throw new ConfigError(`${configPath}: \`selfhost.${key}\` must be a non-empty string.`)
+      }
+    }
+    if (raw.selfhost.service !== undefined && typeof raw.selfhost.service !== 'string') {
+      throw new ConfigError(`${configPath}: \`selfhost.service\` must be a string.`)
+    }
+  }
+
   return {
     root: dirname(configPath),
     plane: {
@@ -112,6 +132,7 @@ export function loadConfig(configPath: string): Config {
     vercel: raw.vercel,
     archify: raw.archify,
     sheets: raw.sheets,
+    selfhost: raw.selfhost,
   }
 }
 

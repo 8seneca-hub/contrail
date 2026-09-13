@@ -2,7 +2,18 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { join } from 'node:path'
 import { buildSite, docsForAudience } from './emit/site.js'
+import type { DeployTransport } from './deploy/transport.js'
 import type { Audience, Config, Doc } from './types.js'
+
+export type DeployTarget = 'vercel' | 'railway'
+
+/** `contrail deploy`'s `--target` flag. Defaults to `vercel`, the original (and still unchanged)
+ * deploy path — `railway` opts into the self-hosted path below. */
+export function parseDeployTarget(value: string | undefined): DeployTarget {
+  if (value === undefined || value === 'vercel') return 'vercel'
+  if (value === 'railway') return 'railway'
+  throw new Error(`Unknown --target '${value}'. Must be 'vercel' or 'railway'.`)
+}
 
 /** `contrail deploy`'s own audience flag accepts `internal` explicitly (unlike `site`/`check`/
  * `publish`, whose `--audience` only ever narrows to `client`) — the deploy guard needs to know
@@ -77,14 +88,88 @@ function assertProjectMatches(config: Config, audience: Audience, root: string):
 }
 
 /** Every file under `dir`, counted recursively — what `--dry-run` reports as the file count, and
- * what a real deploy is about to hand to `vercel deploy --prebuilt`. */
-function countFiles(dir: string): number {
+ * what a real deploy is about to hand to `vercel deploy --prebuilt`. Exported for the `railway`
+ * transport, which reports the same count for its own `--dry-run` output. */
+export function countFiles(dir: string): number {
   let count = 0
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const path = join(dir, entry.name)
     count += entry.isDirectory() ? countFiles(path) : 1
   }
   return count
+}
+
+type SelfhostConfig = NonNullable<Config['selfhost']>
+
+/** `slug` becomes a literal path segment appended to `internalPath`/`clientPath` — this pattern is
+ * what keeps it from escaping via `..` or a leading `/`: no `/` or `.` character is in the allowed
+ * class at all. */
+const SLUG_PATTERN = /^[a-z0-9][a-z0-9-]*$/
+
+/**
+ * Guard (config shape): `selfhost` must be configured, and `internalPath`/`clientPath` must be
+ * distinct. A wrong path here is a public directory on the team's own domain — stricter than the
+ * Vercel equivalent, not looser — so this throws naming both paths rather than picking one to
+ * trust.
+ */
+function assertSelfhostConfig(config: Config): SelfhostConfig {
+  const selfhost = config.selfhost
+  if (!selfhost) {
+    throw new DeployError(
+      'contrail.config.ts has no `selfhost` configured — required for `--target railway`. See ' +
+        '`selfhost: { target, volume, slug, internalPath, clientPath }` in the docs.',
+    )
+  }
+  if (selfhost.internalPath === selfhost.clientPath) {
+    throw new DeployError(
+      `Refusing to deploy: \`selfhost.internalPath\` and \`selfhost.clientPath\` are both ` +
+        `'${selfhost.internalPath}' — an internal build must never be able to land on the client ` +
+        'path, or vice versa. Configure two distinct paths.',
+    )
+  }
+  return selfhost
+}
+
+/** Guard (slug validation): `slug` becomes a path segment, so it must not be able to escape the
+ * configured `internalPath`/`clientPath` via `..` or an absolute path. */
+function assertValidSlug(slug: string): void {
+  if (!SLUG_PATTERN.test(slug)) {
+    throw new DeployError(
+      `Invalid \`selfhost.slug\` '${slug}': must match ${SLUG_PATTERN} — lowercase letters, ` +
+        'digits, and hyphens only, and must not start with a hyphen.',
+    )
+  }
+}
+
+function remotePathFor(selfhost: SelfhostConfig, audience: Audience): string {
+  const base = audience === 'client' ? selfhost.clientPath : selfhost.internalPath
+  return `${base}/${selfhost.slug}`
+}
+
+/**
+ * Guard (empty-build refusal): a failed build must never be allowed to overwrite a live site with
+ * nothing. Runs after the build, before any transport is touched, and reports exactly what it
+ * found so the failure is actionable. Exported so it can be unit-tested directly against fixture
+ * directories — `buildSite` always writes a root `index.html` on success, so this branch is not
+ * reachable by driving a normal build through `deploy()` end to end.
+ */
+export function assertBuildNotEmpty(outDir: string): void {
+  if (!existsSync(outDir)) {
+    throw new DeployError(`Refusing to deploy: build output directory ${outDir} does not exist.`)
+  }
+  const entries = readdirSync(outDir)
+  if (entries.length === 0) {
+    throw new DeployError(
+      `Refusing to deploy: build output directory ${outDir} is empty. A failed build must never ` +
+        'overwrite a live site.',
+    )
+  }
+  if (!existsSync(join(outDir, 'index.html'))) {
+    throw new DeployError(
+      `Refusing to deploy: build output directory ${outDir} has ${entries.length} file(s) but no ` +
+        'index.html. A failed build must never overwrite a live site.',
+    )
+  }
 }
 
 export interface CliResult {
@@ -118,6 +203,9 @@ export interface DeployOptions {
    * `contrail site` does, so it needs the full set regardless of which audience narrows it. */
   docs: Doc[]
   audience?: string
+  /** Defaults to `'vercel'` — the original path, unchanged. `'railway'` builds the same way but
+   * pushes through `transport` instead of shelling out to the Vercel CLI. */
+  target?: DeployTarget
   prod?: boolean
   dryRun?: boolean
   yes?: boolean
@@ -126,6 +214,9 @@ export interface DeployOptions {
   runner: CliRunner
   /** Required only when guard 2 can actually fire (`--prod --audience client` without `--yes`). */
   confirm?: ConfirmFn
+  /** Required only when `target` is `'railway'` (or any future self-hosted target) — never used
+   * for `'vercel'`. Injected so tests never invoke a real transport CLI. */
+  transport?: DeployTransport
 }
 
 export type DeployStatus = 'deployed' | 'dry-run' | 'declined'
@@ -136,6 +227,8 @@ export interface DeployResult {
   command: string[]
   fileCount: number
   docCount: number
+  /** Only set for a self-hosted target — the resolved `<internalPath|clientPath>/<slug>`. */
+  remotePath?: string
 }
 
 /**
@@ -146,6 +239,10 @@ export interface DeployResult {
 export async function deploy(options: DeployOptions): Promise<DeployResult> {
   const audience = parseDeployAudience(options.audience)
   const outDir = options.outDir ?? join(options.config.root, 'site')
+
+  if ((options.target ?? 'vercel') === 'railway') {
+    return deploySelfhost(options, audience, outDir)
+  }
 
   // Guard 1 runs before anything is built: a wrong-project deploy is the single worst outcome this
   // tool can produce, so there is no reason to spend time building first.
@@ -186,4 +283,39 @@ export async function deploy(options: DeployOptions): Promise<DeployResult> {
   }
 
   return { status: 'deployed', audience, command, fileCount, docCount: emitted.length }
+}
+
+/**
+ * `contrail deploy --target railway` (or any future self-hosted target): same build as the Vercel
+ * path, then — guards permitting — a `DeployTransport.push` instead of a Vercel CLI invocation.
+ * Nothing here knows about Railway specifically; that lives entirely in `src/deploy/railway.ts`.
+ */
+async function deploySelfhost(options: DeployOptions, audience: Audience, outDir: string): Promise<DeployResult> {
+  const selfhost = assertSelfhostConfig(options.config)
+  assertValidSlug(selfhost.slug)
+  const remotePath = remotePathFor(selfhost, audience)
+
+  const emitted = docsForAudience(options.docs, siteAudienceFor(audience))
+  await buildSite({
+    docs: options.docs,
+    outDir,
+    cacheDir: join(options.config.root, '.contrail', 'cache'),
+    audience: siteAudienceFor(audience),
+  })
+
+  // Empty-build guard runs after the build, before the transport is ever touched.
+  assertBuildNotEmpty(outDir)
+
+  if (!options.transport) {
+    throw new DeployError(
+      "`--target railway` requires a transport (none was provided) — see createRailwayTransport in " +
+        'src/deploy/railway.ts.',
+    )
+  }
+
+  const pushResult = await options.transport.push(outDir, remotePath, { dryRun: options.dryRun })
+  const fileCount = pushResult.filesSent
+
+  const status: DeployStatus = options.dryRun ? 'dry-run' : 'deployed'
+  return { status, audience, command: [], fileCount, docCount: emitted.length, remotePath }
 }

@@ -102,4 +102,49 @@ describe('loadConfig', () => {
     }))
     expect(() => loadConfig(join(root, 'contrail.config.json'))).toThrow(/archify.*must be an object/)
   })
+
+  it('accepts a valid selfhost config', () => {
+    const root = workspace(JSON.stringify({
+      plane: { baseUrl: 'https://plane.example.com', workspace: 'acme' },
+      docs: ['./docs/**/*.md'],
+      selfhost: {
+        target: 'railway',
+        volume: 'docs-volume',
+        slug: 'meridian',
+        internalPath: '/srv/contrail/internal',
+        clientPath: '/srv/contrail/client',
+      },
+    }))
+    const cfg = loadConfig(join(root, 'contrail.config.json'))
+    expect(cfg.selfhost?.slug).toBe('meridian')
+  })
+
+  it('rejects a selfhost.target that is not railway', () => {
+    const root = workspace(JSON.stringify({
+      plane: { baseUrl: 'https://plane.example.com', workspace: 'acme' },
+      docs: ['./docs/**/*.md'],
+      selfhost: {
+        target: 'ssh',
+        volume: 'docs-volume',
+        slug: 'meridian',
+        internalPath: '/srv/contrail/internal',
+        clientPath: '/srv/contrail/client',
+      },
+    }))
+    expect(() => loadConfig(join(root, 'contrail.config.json'))).toThrow(/selfhost\.target.*must be 'railway'/)
+  })
+
+  it('rejects a selfhost config missing a required string field', () => {
+    const root = workspace(JSON.stringify({
+      plane: { baseUrl: 'https://plane.example.com', workspace: 'acme' },
+      docs: ['./docs/**/*.md'],
+      selfhost: {
+        target: 'railway',
+        volume: 'docs-volume',
+        slug: 'meridian',
+        internalPath: '/srv/contrail/internal',
+      },
+    }))
+    expect(() => loadConfig(join(root, 'contrail.config.json'))).toThrow(/selfhost\.clientPath.*non-empty string/)
+  })
 })
