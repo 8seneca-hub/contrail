@@ -84,6 +84,35 @@ swap atomic, and makes rollback a matter of pointing at the previous build.
 
 Prune old builds on a schedule — keep the last three.
 
+### Who is allowed to upload
+
+Both write endpoints take the same `X-API-Key` header as the rest of Plane's API, and a key belongs
+to a person — so apply the **same project membership check as the read path**, at member or admin
+level. Not workspace membership: a workspace member who is not on this project must not be able to
+replace its documentation, and a guest must not either.
+
+This is easy to leave out, because the upload endpoint is the one nobody browses to. Without it,
+any key in the workspace can overwrite any project's docs.
+
+### Error semantics that matter
+
+- **Commit of a `build_id` that was never uploaded, or only partly uploaded → 400, and do not move
+  the pointer.** A pointer to a prefix that isn't there makes the Docs tab blank with no obvious
+  cause. Cheap insurance: before committing, LIST the prefix and compare the object count against
+  the manifest you stored at upload time; refuse if it is short.
+- **Commit of a build already committed → fine, idempotent.** A retried deploy should not error.
+- **Upload manifest with a path containing `..`, a leading `/`, or a backslash → 400.** Reject it at
+  the manifest, not only at serve time — that way a hostile path never reaches storage at all.
+
+### One thing to check in your presign policy
+
+The diagram files are large — around 800 KB each, occasionally more. A presigned POST policy with a
+`content-length-range` capped lower than that will reject exactly those files, and the failure
+surfaces as an opaque 403 from MinIO rather than anything readable.
+
+Set the range from the `size` the manifest declares for each file (which also stops a client
+uploading something far larger than it announced), and allow at least 25 MB of headroom.
+
 ## Piece 2 — serving
 
 This is the piece that makes relative links work, and the one to get right.
