@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
-import { DOC_KIND_SECTION, DOC_KINDS, isDocKind, type DocKind, type Section } from './doc-kinds.js'
+import { COLLECTION_META, DOC_KIND_SECTION, DOC_KINDS, isDocKind, type DocKind, type Section } from './doc-kinds.js'
 import type { DiataxisKind } from './types.js'
 
 export const CONFIG_TEMPLATE = `export default {
@@ -285,13 +285,90 @@ function yamlString(value: string): string {
   return JSON.stringify(value)
 }
 
+const MONTH_NAMES = [
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
+]
+
+/** `2026-09-13` -> `13 September 2026` — spelled out, not ISO: the title is prose a person reads,
+ * and the filename (not the title) is what needs to sort. */
+function spelledDate(isoDate: string): string {
+  const [year, month, day] = isoDate.split('-').map(Number)
+  return `${day} ${MONTH_NAMES[month! - 1]} ${year}`
+}
+
+/** De-slugs a filename fragment into sentence case: `sprint-review` -> `Sprint review`. The result
+ * will sometimes read awkwardly (`use-postgres` -> `Use postgres`, not `Use PostgreSQL`) — that is
+ * fine and expected. It is a starting point the author edits, and still better than leaving the
+ * bare docKind name (`Adr`) as the title. */
+function deSlug(slug: string): string {
+  const words = slug.split('-').filter(Boolean)
+  if (words.length === 0) return ''
+  const [first, ...rest] = words
+  return [first!.charAt(0).toUpperCase() + first!.slice(1).toLowerCase(), ...rest.map((w) => w.toLowerCase())].join(
+    ' ',
+  )
+}
+
+const DATE_FILENAME = /^(\d{4}-\d{2}-\d{2})(?:-(.+))?$/
+const NUMBER_FILENAME = /^(\d+)(?:-(.+))?$/
+const VERSION_FILENAME = /^(v?\d+(?:\.\d+){1,2})(?:-(.+))?$/i
+
+/**
+ * Derives a starting title from the filename an author scaffolding a collection document (Task 7)
+ * already chose — the discriminator is right there in the name they picked, so there is no reason
+ * to make them type it twice. Returns `undefined` for a singleton docKind (there is nothing to
+ * derive: `DOC_KIND_META`'s fixed title already is the title) or when the filename doesn't actually
+ * carry its docKind's discriminator (an unusual name `contrail scaffold` didn't suggest) — the
+ * fixed title is still a safe fallback either way.
+ */
+function deriveCollectionTitle(docKind: DocKind, filenameStem: string): string | undefined {
+  const meta = COLLECTION_META[docKind]
+  if (!meta) return undefined
+
+  if (meta.discriminator === 'date') {
+    const match = DATE_FILENAME.exec(filenameStem)
+    if (!match) return undefined
+    const purpose = match[2] ? deSlug(match[2]) : 'Untitled'
+    return `${purpose} — ${spelledDate(match[1]!)}`
+  }
+
+  if (meta.discriminator === 'number') {
+    const match = NUMBER_FILENAME.exec(filenameStem)
+    if (!match) return undefined
+    const prefix = docKind === 'adr' ? 'ADR' : 'CR'
+    const what = match[2] ? deSlug(match[2]) : 'Untitled'
+    return `${prefix} ${match[1]} — ${what}`
+  }
+
+  // version
+  const match = VERSION_FILENAME.exec(filenameStem)
+  if (!match) return undefined
+  return `${match[1]} — ${spelledDate(new Date().toISOString().slice(0, 10))}`
+}
+
 /** Renders a scaffolded document: correct frontmatter plus a short prompt —
- * a few guiding questions, never a lecture — describing what belongs here. */
-export function renderDocFile(docKind: DocKind): string {
+ * a few guiding questions, never a lecture — describing what belongs here.
+ * `targetPath`, when given, lets a collection docKind (Task 7) derive its
+ * title from the filename the author chose rather than falling back to the
+ * generic `DOC_KIND_META` title (`Meeting Notes`, `ADR`, ...). */
+export function renderDocFile(docKind: DocKind, targetPath?: string): string {
   const meta = DOC_KIND_META[docKind]
+  const derivedTitle = targetPath ? deriveCollectionTitle(docKind, basename(targetPath, '.md')) : undefined
+  const title = derivedTitle ?? meta.title
   const lines = [
     '---',
-    `title: ${yamlString(meta.title)}`,
+    `title: ${yamlString(title)}`,
     `summary: ${yamlString(meta.summary)}`,
     'status: draft',
     `kind: ${meta.kind}`,
@@ -300,7 +377,7 @@ export function renderDocFile(docKind: DocKind): string {
     `docKind: ${docKind}`,
     '---',
     '',
-    `# ${meta.title}`,
+    `# ${title}`,
     '',
     '## Guiding questions',
     '',
@@ -337,14 +414,21 @@ const INDEX_STUBS: IndexStub[] = [
     title: 'Meetings',
     section: '03-management',
     summary: 'One document per meeting — decisions and follow-ups, not a transcript.',
-    notes: ["Add a new meeting note: `contrail scaffold meeting docs/03-management/meetings/<date>-<topic>.md`."],
+    notes: [
+      'Add a new meeting note: `contrail scaffold meeting docs/03-management/meetings/<date>-<topic>.md` ' +
+        '— the title convention is "<Purpose> — <D Month YYYY>", e.g. "Kickoff call — 11 August 2026".',
+    ],
   },
   {
     path: '03-management/decisions/README.md',
     title: 'Decisions',
     section: '03-management',
     summary: 'One ADR per architecture decision expensive enough to reverse that it needs a record.',
-    notes: ['Add a new decision: `contrail scaffold adr docs/03-management/decisions/<NNN>-<slug>.md`.'],
+    notes: [
+      'Add a new decision: `contrail scaffold adr docs/03-management/decisions/<NNN>-<slug>.md` ' +
+        '— the title convention is "ADR <NNNN> — <decision, present tense>", e.g. ' +
+        '"ADR 0001 — The TMS stays the system of record".',
+    ],
   },
   {
     path: '03-management/change-requests/README.md',
@@ -353,7 +437,8 @@ const INDEX_STUBS: IndexStub[] = [
     summary: 'One document per requested change to scope, schedule, or budget.',
     notes: [
       'Add a new change request: `contrail scaffold change-request ' +
-        'docs/03-management/change-requests/<NNN>-<slug>.md`.',
+        'docs/03-management/change-requests/<NNN>-<slug>.md` — the title convention is ' +
+        '"CR <NNN> — <what> (<status>)", e.g. "CR 003 — Add mobile app (rejected)".',
     ],
   },
   {
@@ -371,14 +456,20 @@ const INDEX_STUBS: IndexStub[] = [
     title: 'QA Reports',
     section: '05-delivery',
     summary: 'One report per round of testing.',
-    notes: ['Add a new report: `contrail scaffold qa-report docs/05-delivery/qa-reports/<date>.md`.'],
+    notes: [
+      'Add a new report: `contrail scaffold qa-report docs/05-delivery/qa-reports/<date>-<what-was-tested>.md` ' +
+        '— the title convention is "<What was tested> — <D Month YYYY>".',
+    ],
   },
   {
     path: '05-delivery/releases/README.md',
     title: 'Releases',
     section: '05-delivery',
     summary: 'One entry per release.',
-    notes: ['Add a new entry: `contrail scaffold release docs/05-delivery/releases/<version>.md`.'],
+    notes: [
+      'Add a new entry: `contrail scaffold release docs/05-delivery/releases/<version>.md` — the ' +
+        'title convention is "<version> — <D Month YYYY>", e.g. "v1.2.0 — 20 September 2026".',
+    ],
   },
 ]
 
@@ -519,6 +610,6 @@ export function scaffoldDoc(docKind: string, targetPath: string): string {
     throw new Error(`${targetPath} already exists.`)
   }
   mkdirSync(dirname(targetPath), { recursive: true })
-  writeFileSync(targetPath, renderDocFile(docKind))
+  writeFileSync(targetPath, renderDocFile(docKind, targetPath))
   return targetPath
 }

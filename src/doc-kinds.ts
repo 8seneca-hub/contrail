@@ -118,6 +118,83 @@ export const DOC_KIND_SECTION: Record<DocKind, Section> = {
   closure: '05-delivery',
 }
 
+export type Cardinality = 'singleton' | 'collection'
+export type Discriminator = 'date' | 'number' | 'version'
+
+export interface CollectionMeta {
+  discriminator: Discriminator
+  /** The expected title shape, shown in the `title-missing-discriminator` lint message
+   * (check.ts) so the fix is obvious without looking anything up. */
+  pattern: string
+  /** One title matching `pattern`, shown alongside it in the same message. */
+  example: string
+}
+
+/**
+ * Most docKinds are singletons — one per project, for which the kind name alone is a sufficient
+ * title (`Budget`, `Scope Statement`, `Project Charter`). A few are collections: many documents
+ * share one docKind, so the title has to carry whatever tells them apart, because the same title
+ * string is read out of context — in the site list, in `llms.txt`, in a browser tab, in an agent's
+ * context window. Every docKind not listed here is a singleton; see `cardinalityOf`.
+ */
+export const COLLECTION_META: Partial<Record<DocKind, CollectionMeta>> = {
+  meeting: {
+    discriminator: 'date',
+    pattern: '<Purpose> — <D Month YYYY>',
+    example: 'Kickoff call — 11 August 2026',
+  },
+  adr: {
+    discriminator: 'number',
+    pattern: 'ADR <NNNN> — <decision, present tense>',
+    example: 'ADR 0001 — The TMS stays the system of record',
+  },
+  'change-request': {
+    discriminator: 'number',
+    pattern: 'CR <NNN> — <what> (<status>)',
+    example: 'CR 003 — Add mobile app (rejected)',
+  },
+  'qa-report': {
+    discriminator: 'date',
+    pattern: '<What was tested> — <D Month YYYY>',
+    example: 'UAT cycle 2 — 14 September 2026',
+  },
+  release: {
+    discriminator: 'version',
+    pattern: '<version> — <D Month YYYY>',
+    example: 'v1.2.0 — 20 September 2026',
+  },
+}
+
+/** A docKind's cardinality: `'collection'` when it has an entry in `COLLECTION_META`, `'singleton'`
+ * otherwise — derived rather than restated per-kind, since "not a collection" already means
+ * singleton and every current and future singleton kind agreeing with that costs nothing to keep. */
+export function cardinalityOf(docKind: DocKind): Cardinality {
+  return docKind in COLLECTION_META ? 'collection' : 'singleton'
+}
+
+const SPELLED_DATE =
+  /\b\d{1,2}\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4}\b/
+const VERSION_TOKEN = /\bv?\d+\.\d+(?:\.\d+)?\b/i
+
+/**
+ * Whether `title` already carries the discriminator its collection docKind requires — the
+ * `title-missing-discriminator` lint rule (check.ts) fires when it does not. Dates must be spelled
+ * out (`11 August 2026`), matching the convention `deriveCollectionTitle` (scaffold.ts) generates,
+ * not the ISO form that governs the filename. `number` is checked leniently (any digit at all) —
+ * what matters is whether a reader can tell this document apart from its siblings, not that the
+ * title spells out "ADR" or "CR" verbatim.
+ */
+export function discriminatorPresent(discriminator: Discriminator, title: string): boolean {
+  switch (discriminator) {
+    case 'date':
+      return SPELLED_DATE.test(title)
+    case 'number':
+      return /\d/.test(title)
+    case 'version':
+      return VERSION_TOKEN.test(title)
+  }
+}
+
 /**
  * A document's `section` disagreeing with its `docKind`'s conventional home
  * is never an error — projects reorganise their tree, and the tool should

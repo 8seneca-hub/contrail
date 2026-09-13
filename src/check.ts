@@ -4,7 +4,14 @@ import { visit } from 'unist-util-visit'
 import type { Heading, Link, List, Root, RootContent, Text } from 'mdast'
 import { parseAttrs } from './blocks/attrs.js'
 import { readProjectMeta } from './config.js'
-import { DOC_KIND_SECTION, SECTIONS, type DocKind, type Section } from './doc-kinds.js'
+import {
+  COLLECTION_META,
+  discriminatorPresent,
+  DOC_KIND_SECTION,
+  SECTIONS,
+  type DocKind,
+  type Section,
+} from './doc-kinds.js'
 import { CORE_DOC_KINDS } from './scaffold.js'
 import type { Config, Doc } from './types.js'
 
@@ -343,6 +350,38 @@ function checkClientDocLinksInternal(doc: Doc, internalUrl: string | undefined, 
   })
 }
 
+const DISCRIMINATOR_NOUN: Record<'date' | 'number' | 'version', string> = {
+  date: 'date',
+  number: 'number',
+  version: 'version',
+}
+
+/**
+ * Task 7: a document title is read out of context — in the site list, in `llms.txt`, in a browser
+ * tab, in an agent's context window — so a collection docKind's title has to carry whatever
+ * distinguishes it from its siblings. `COLLECTION_META` (doc-kinds.ts) says which docKinds are
+ * collections and what discriminator each one requires; a singleton docKind (`meta` undefined)
+ * never fires. Warning, not error: an existing tree should not fail its first `check` over titles,
+ * and this is a readability convention, not a safety property the way `internal-doc-exposed` is.
+ */
+function checkTitleMissingDiscriminator(doc: Doc, findings: Finding[]): void {
+  const docKind = doc.frontmatter.docKind
+  if (!docKind) return
+  const meta = COLLECTION_META[docKind]
+  if (!meta) return
+  if (discriminatorPresent(meta.discriminator, doc.frontmatter.title)) return
+
+  findings.push({
+    doc: doc.key,
+    rule: 'title-missing-discriminator',
+    severity: 'warn',
+    message:
+      `Title "${doc.frontmatter.title}" has no ${DISCRIMINATOR_NOUN[meta.discriminator]} — a ${docKind} title ` +
+      'is read in a list of many. ' +
+      `Expected: "${meta.pattern}", e.g. "${meta.example}".`,
+  })
+}
+
 /**
  * Whether a document is still shaped like a freshly scaffolded stub: the
  * placeholder body `renderDocFile`/`renderIndexStub` (scaffold.ts) write —
@@ -521,6 +560,7 @@ export function checkDocs(docs: Doc[], opts: { strict?: boolean; internalUrl?: s
     checkInternalDocExposed(doc, findings)
     checkUnclassifiedMoneyDoc(doc, findings)
     checkClientDocLinksInternal(doc, opts.internalUrl, findings)
+    checkTitleMissingDiscriminator(doc, findings)
     checkEmptyStub(doc, findings)
     checkOrphanDoc(doc, findings)
     checkNoOwner(doc, findings)

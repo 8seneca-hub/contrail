@@ -57,6 +57,37 @@ than a single conventional path: `meeting` (`03-management/meetings/`), `adr`
 (`03-management/change-requests/`), `qa-report` (`05-delivery/qa-reports/`),
 `release` (`05-delivery/releases/`).
 
+### Title convention for those five
+
+A title is read out of context — in the site list, in `llms.txt`, in a browser
+tab, in an agent's context window. Every other `docKind` is a singleton, so its
+kind name alone is enough (`Budget`, `Scope Statement`). These five are
+collections: many documents share one `docKind`, so the title has to carry
+whatever tells one apart from its siblings — "Meeting" or "ADR" tells a reader
+nothing when there are forty of them.
+
+| `docKind` | Discriminator | Title pattern | Example |
+|---|---|---|---|
+| `meeting` | date | `<Purpose> — <D Month YYYY>` | `Kickoff call — 11 August 2026` |
+| `adr` | number | `ADR <NNNN> — <decision, present tense>` | `ADR 0001 — The TMS stays the system of record` |
+| `change-request` | number + status | `CR <NNN> — <what> (<status>)` | `CR 003 — Add mobile app (rejected)` |
+| `qa-report` | date | `<What was tested> — <D Month YYYY>` | `UAT cycle 2 — 14 September 2026` |
+| `release` | version + date | `<version> — <D Month YYYY>` | `v1.2.0 — 20 September 2026` |
+
+Dates are spelled out (`11 August 2026`), never ISO — the title is prose a
+person reads; the ISO form still governs the *filename*, where it drives
+sorting. The purpose comes first, the date second — a reader scanning forty
+meetings is looking for "the one about pricing", not a date they'd have to
+already know. An ADR title states the decision as an assertion, present
+tense — `The TMS stays the system of record`, not `TMS decision`.
+
+`contrail scaffold meeting|adr|change-request|qa-report|release <path>`
+derives a starting title from the filename you choose (a date- or
+number-prefixed name carries its own discriminator) — edit it rather than
+leaving the derived guess if it reads awkwardly. `contrail check` warns
+(`title-missing-discriminator`) when one of these five is missing its
+discriminator; the warning names the expected pattern.
+
 Never hand-write frontmatter. Create every document with
 `contrail scaffold <docKind> <path>` (add `--json` when a script reads the
 result) — it is the one way to get the schema right, and a producer never
