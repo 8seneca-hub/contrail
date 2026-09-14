@@ -25,10 +25,11 @@ describe('Task 5: persistent section nav', () => {
       const page = readFileSync(join(outDir, file), 'utf8')
       expect(page).toContain('class="section-nav"')
       expect(page).toContain('aria-label="Documentation sections"')
-      // Requirement 1: works with JavaScript disabled — the nav itself is a pure link list.
-      // (Task 1 adds a theme-bridge script elsewhere in <head>; it has nothing to do with the nav.)
-      const navBlock = /<nav class="section-nav"[^>]*>([\s\S]*?)<\/nav>/.exec(page)![1]!
-      expect(navBlock).not.toContain('<script')
+      // Requirement 1: works with JavaScript disabled — the page's only script is Task 1's theme
+      // bridge, which just sets data-theme and forwards ?theme to iframes. No content depends on it.
+      const scriptOccurrences = page.match(/<script/g) ?? []
+      expect(scriptOccurrences).toHaveLength(1)
+      expect(page).toContain('<script>(function(){var t=new URLSearchParams(location.search).get("theme");')
     }
   })
 
@@ -97,16 +98,18 @@ describe('Task 5: persistent section nav', () => {
     }
   })
 
-  it('the index nav renders without JS: no <script> inside the nav, and every entry is a plain <a>', async () => {
+  it('the index has no script beyond the Task 1 theme bridge, and every nav entry is a plain <a>', async () => {
     const root = mkdtempSync(join(tmpdir(), 'contrail-nav-nojs-'))
     const overview = writeAt(root, 'docs/01-overview/brief.md', FM())
     const outDir = join(root, 'out')
     await buildSite({ docs: [overview], outDir, cacheDir: join(root, '.cache') })
 
     const index = readFileSync(join(outDir, 'index.html'), 'utf8')
-    // Task 1 adds a theme-bridge script to the page's <head>; the nav itself stays script-free.
-    const navBlock = /<nav class="section-nav"[^>]*>([\s\S]*?)<\/nav>/.exec(index)![1]!
-    expect(navBlock).not.toContain('<script')
+    // Requirement 1: works with JavaScript disabled — the only script on the page is Task 1's
+    // theme bridge; no content depends on JS running.
+    const scriptOccurrences = index.match(/<script/g) ?? []
+    expect(scriptOccurrences).toHaveLength(1)
+    expect(index).toContain('<script>(function(){var t=new URLSearchParams(location.search).get("theme");')
     expect(index).not.toContain('role="tab"')
     expect(index).not.toContain('role="tablist"')
   })
