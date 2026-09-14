@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
+import { DeployError } from '../src/deploy.js'
 import { collectDocsFiles, createPlaneDocsTransport } from '../src/deploy/plane-docs.js'
 
 function buildDir(): string {
@@ -173,5 +174,64 @@ describe('createPlaneDocsTransport', () => {
       /neither presigned nor claimed to already hold 2 file\(s\)/,
     )
     expect(plane.calls.some((call) => call.url.includes('/commit/'))).toBe(false)
+  })
+
+  // A tree previously deployed to Vercel has site.internalUrl configured, so its llms.txt names
+  // that host absolutely. Pushing it to Plane unchanged would ship an agent index that points
+  // somewhere Plane's own membership check never runs.
+  describe('llms.txt origin guard', () => {
+    it('refuses to push when llms.txt links an origin other than baseUrl, and POSTs nothing', async () => {
+      const plane = fakePlane()
+      const dir = buildDir()
+      writeFileSync(
+        join(dir, 'llms.txt'),
+        '# Docs\n\n- [PRD](https://example.vercel.app/04-technical/prd.html): summary\n',
+      )
+
+      await expect(transportFor(plane.fetchFn).push(dir, 'internal', {})).rejects.toThrow(
+        /1 entry at https:\/\/example\.vercel\.app.*site\.internalUrl/s,
+      )
+      expect(plane.fetchFn).not.toHaveBeenCalled()
+    })
+
+    it('catches the same mis-configured build on a dry run', async () => {
+      const plane = fakePlane()
+      const dir = buildDir()
+      writeFileSync(join(dir, 'llms.txt'), '- [PRD](https://example.vercel.app/prd.html): summary\n')
+
+      await expect(transportFor(plane.fetchFn).push(dir, 'internal', { dryRun: true })).rejects.toThrow(DeployError)
+      expect(plane.fetchFn).not.toHaveBeenCalled()
+    })
+
+    it('pushes normally when llms.txt links are relative', async () => {
+      const plane = fakePlane()
+      const dir = buildDir()
+      writeFileSync(join(dir, 'llms.txt'), '- [PRD](04-technical/prd.html): summary\n')
+
+      const result = await transportFor(plane.fetchFn).push(dir, 'internal', {})
+
+      expect(result.filesSent).toBe(4)
+    })
+
+    it('pushes normally when llms.txt links are absolute against baseUrl itself', async () => {
+      const plane = fakePlane()
+      const dir = buildDir()
+      writeFileSync(
+        join(dir, 'llms.txt'),
+        '- [PRD](https://projects.8seneca.com/04-technical/prd.html): summary\n',
+      )
+
+      const result = await transportFor(plane.fetchFn).push(dir, 'internal', {})
+
+      expect(result.filesSent).toBe(4)
+    })
+
+    it('does not error when the build has no llms.txt at all', async () => {
+      const plane = fakePlane()
+
+      await expect(transportFor(plane.fetchFn).push(buildDir(), 'internal', {})).resolves.toMatchObject({
+        filesSent: 3,
+      })
+    })
   })
 })

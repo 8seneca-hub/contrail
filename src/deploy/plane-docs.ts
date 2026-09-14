@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
 import { DeployError } from '../deploy.js'
 import type { DeployTransport } from './transport.js'
@@ -111,6 +111,44 @@ function newBuildId(): string {
   return `${stamp}-${Math.random().toString(16).slice(2, 8)}`
 }
 
+const MARKDOWN_LINK = /\]\((https?:\/\/[^\s)]+)\)/g
+
+/**
+ * `llms.txt` is the only thing an agent has to discover what documents exist and where to fetch
+ * them, so every link in it must resolve on the host this build is actually being pushed to.
+ * `buildLlmsTxt` makes links absolute against `site.internalUrl`/`clientUrl` whenever either is
+ * configured — right for the Vercel-hosted tree that setting was written for, wrong the moment the
+ * same build is redeployed to Plane without clearing it. Nothing about the push itself would fail:
+ * the upload and commit both succeed, and the index inside the finished build just names the wrong
+ * host. An agent following it either 404s, or worse, silently reads a stale public copy of a
+ * document that was supposed to come from behind Plane's project membership check.
+ *
+ * Fixing this in `buildLlmsTxt` would be wrong: relative links already resolve correctly under the
+ * docs prefix, because `llms.txt` sits beside the pages it names. This is a guard against a
+ * mis-configured build reaching Plane, not a defect in how the emitter builds links — so it belongs
+ * here, not there.
+ */
+function assertLlmsTxtMatchesOrigin(localDir: string, baseUrl: string): void {
+  const path = join(localDir, 'llms.txt')
+  if (!existsSync(path)) return
+
+  const expected = new URL(baseUrl).origin
+  const foreign = [...readFileSync(path, 'utf8').matchAll(MARKDOWN_LINK)]
+    .map((match) => match[1])
+    .filter((link): link is string => link !== undefined)
+    .map((link) => new URL(link).origin)
+    .filter((origin) => origin !== expected)
+  if (foreign.length === 0) return
+
+  const offending = [...new Set(foreign)].join(', ')
+  throw new DeployError(
+    `llms.txt in ${localDir} points ${foreign.length} entr${foreign.length === 1 ? 'y' : 'ies'} at ` +
+      `${offending} instead of this deploy's target, ${expected}. The build was made with site.internalUrl ` +
+      `(or clientUrl, for a client-audience build) set to that host and never rebuilt for Plane. Clear it and ` +
+      `rebuild before deploying — nothing was sent to Plane; the previous build is still live.`,
+  )
+}
+
 /**
  * `remotePath` carries the audience (`'internal'` or `'client'`) — for this target there is no
  * filesystem path, because the server owns the layout. `deploy.ts` computes it; see
@@ -140,6 +178,8 @@ export function createPlaneDocsTransport(opts: PlaneDocsTransportOptions): Deplo
   return {
     name: 'plane',
     async push(localDir, remotePath, pushOpts) {
+      assertLlmsTxtMatchesOrigin(localDir, baseUrl)
+
       const audience = remotePath
       const files = collectDocsFiles(localDir)
       const bytes = files.reduce((total, file) => total + file.size, 0)
