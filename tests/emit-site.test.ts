@@ -434,3 +434,47 @@ describe('Fix 5: the index groups documents by section', () => {
     expect(existsSync(join(outDir, '00-meta', 'index.html'))).toBe(false)
   })
 })
+
+describe('Task 2: a .md file is emitted alongside every page', () => {
+  it("a build writes <page>.md next to <page>.html with the document's Markdown content", async () => {
+    const root = mkdtempSync(join(tmpdir(), 'contrail-site-md-'))
+    const doc = writeDoc(root, 'doc.md', `${FRONTMATTER}Some **bold** prose.\n`)
+    const outDir = join(root, 'out')
+
+    const result = await buildSite({ docs: [doc], outDir, cacheDir: join(root, '.cache') })
+
+    expect(result.markdownFiles).toBe(1)
+    expect(existsSync(join(outDir, 'doc.html'))).toBe(true)
+    const md = readFileSync(join(outDir, 'doc.md'), 'utf8')
+    expect(md).toContain('Some **bold** prose.')
+  })
+
+  it('a --audience client build writes no .md for an internal-only document', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'contrail-site-md-audience-'))
+    const clientDoc = writeDoc(
+      root,
+      'brief.md',
+      '---\ntitle: Brief\nsummary: S\nstatus: current\naudience: client\n---\n\nClient-visible.\n',
+    )
+    const internalDoc = writeDoc(
+      root,
+      'budget.md',
+      '---\ntitle: Budget\nsummary: S\nstatus: current\naudience: internal\n---\n\nInternal only.\n',
+    )
+    const outDir = join(root, 'out')
+
+    const result = await buildSite({
+      docs: [clientDoc, internalDoc],
+      outDir,
+      cacheDir: join(root, '.cache'),
+      audience: 'client',
+    })
+
+    // Same filter, same reason as the page itself: an internal document's .md must not
+    // leak into a client build any more than its .html does.
+    expect(result.markdownFiles).toBe(1)
+    expect(existsSync(join(outDir, 'brief.md'))).toBe(true)
+    expect(existsSync(join(outDir, 'budget.md'))).toBe(false)
+    expect(existsSync(join(outDir, 'budget.html'))).toBe(false)
+  })
+})

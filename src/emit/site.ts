@@ -17,6 +17,7 @@ import type { ArchifyOptions } from '../render/archify.js'
 import type { Mmdc } from '../render/mermaid.js'
 import { getSnapshot, sheetUrlFor, type SheetSnapshot } from '../sheets/snapshot.js'
 import type { Audience, Doc } from '../types.js'
+import { emitMarkdown } from './md.js'
 
 const SITE_CSS_PATH = fileURLToPath(new URL('../../templates/site.css', import.meta.url))
 
@@ -97,6 +98,9 @@ export interface SiteResult {
   pages: string[]
   /** Number of distinct diagram artifacts copied into the output. */
   diagrams: number
+  /** Number of `.md` files written alongside pages — one per page, the agent-readable
+   * counterpart `collectDocsFiles` (src/deploy/plane-docs.ts) picks up for upload. */
+  markdownFiles: number
   /** Links rewritten to plain text because their target was excluded from this build. */
   defangedLinks: DefangedLink[]
 }
@@ -923,11 +927,19 @@ export async function buildSite(args: {
     tree,
   }
   const pages: string[] = []
+  let markdownFiles = 0
   for (const doc of emitted) {
-    const pagePath = join(outDir, pageFileFor(doc.key))
+    const pageFile = pageFileFor(doc.key)
+    const pagePath = join(outDir, pageFile)
     mkdirSync(dirname(pagePath), { recursive: true })
     writeFileSync(pagePath, emitSite(doc, ctx))
     pages.push(doc.key)
+
+    // The agent-readable counterpart to the page just written, at the same path with
+    // `.md` in place of `.html`. `emitted` is already audience-filtered (see above), so a
+    // client build omits an internal document's `.md` for the same reason it omits its page.
+    writeFileSync(join(outDir, pageFile.replace(/\.html$/, '.md')), emitMarkdown(doc))
+    markdownFiles++
   }
 
   writeFileSync(join(outDir, 'index.html'), emitIndex(ctx))
@@ -947,5 +959,5 @@ export async function buildSite(args: {
   }
   writeLandingPages(tree, [])
 
-  return { outDir, pages, diagrams: diagramCount, defangedLinks }
+  return { outDir, pages, diagrams: diagramCount, markdownFiles, defangedLinks }
 }

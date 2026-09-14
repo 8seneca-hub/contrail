@@ -396,7 +396,9 @@ export async function main(argv: string[]): Promise<number> {
       buildLlmsTxt(config, docsForAudience(allDocs, audience), { linkFor: (doc) => pageFileFor(doc.key), baseUrl: siteUrl }),
     )
 
-    console.log(`Wrote ${result.pages.length} page(s) and ${result.diagrams} diagram(s) to ${result.outDir}`)
+    console.log(
+      `Wrote ${result.pages.length} page(s), ${result.markdownFiles} markdown file(s), and ${result.diagrams} diagram(s) to ${result.outDir}`,
+    )
     console.log(`Wrote ${llmsPath}`)
     if (audience === 'client' && result.pages.length === 0) {
       console.log(emptyClientSiteMessage())
