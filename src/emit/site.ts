@@ -612,6 +612,20 @@ function canonicalFor(ctx: SiteEmitContext, pageFile: string): string | undefine
   return ctx.siteUrl ? `${ctx.siteUrl}/${pageFile}` : undefined
 }
 
+/** Task 1's theme bridge: the Docs tab renders this bundle in a sandboxed iframe on an opaque
+ * origin, so the page cannot read Plane's theme via `postMessage` or storage — Plane passes it as
+ * `?theme=dark|light` instead. The second half forwards the same parameter to nested diagram
+ * iframes so a page and its diagrams never disagree; without it both fall back to
+ * `prefers-color-scheme` and mismatch whenever the reader's Plane theme differs from their OS. */
+const THEME_SCRIPT = `<script>(function(){var t=new URLSearchParams(location.search).get("theme");
+if(t!=="dark"&&t!=="light")return;
+document.documentElement.setAttribute("data-theme",t);
+addEventListener("DOMContentLoaded",function(){
+document.querySelectorAll("iframe[src]").forEach(function(f){
+var u=new URL(f.getAttribute("src"),location.href);
+u.searchParams.set("theme",t);
+f.setAttribute("src",u.pathname+u.search);});});})();</script>`
+
 function pageShell(title: string, body: string, rootPrefix: string, canonicalUrl?: string): string {
   const canonicalTag = canonicalUrl ? `\n<link rel="canonical" href="${escapeHtml(canonicalUrl)}">` : ''
   return `<!doctype html>
@@ -621,6 +635,7 @@ function pageShell(title: string, body: string, rootPrefix: string, canonicalUrl
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escapeHtml(title)}</title>
 <link rel="stylesheet" href="${rootPrefix}site.css">${canonicalTag}
+${THEME_SCRIPT}
 </head>
 <body>
 ${body}

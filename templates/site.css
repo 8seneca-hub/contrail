@@ -1,70 +1,89 @@
+/* Colour tokens ported from Plane's own design system so a build hosted in a project's Docs tab
+   reads as part of the application rather than as a foreign site in a frame. Values are taken from
+   packages/tailwind-config/variables.css in the Plane fork, resolved through their var() chains.
+
+   Copied rather than imported on purpose: the Docs tab renders this bundle in a sandboxed iframe on
+   an opaque origin, which cannot reach Plane's stylesheet. Regenerate this block when Plane's
+   palette moves; nothing here updates by itself.
+
+   Status names are contrail's; the palette behind each is Plane's semantic colour of the same
+   meaning — draft~warning, review~accent, current~success, stale~danger. Alert callouts reuse them
+   (note~review, tip~current, warning~draft, caution~stale) and add the one tone with no status
+   equivalent. */
 :root {
   color-scheme: light dark;
-  --bg: #ffffff;
-  --bg-raised: #f6f7f9;
-  --fg: #1a1d23;
-  --fg-muted: #5a6270;
-  --border: #e2e5ea;
-  --link: #1d5fd6;
-  --link-visited: #6b3fb8;
-  --status-draft-bg: #fffbeb;
-  --status-draft-fg: #92400e;
-  --status-review-bg: #eff6ff;
-  --status-review-fg: #1e40af;
-  --status-current-bg: #ecfdf5;
-  --status-current-fg: #065f46;
-  --status-stale-bg: #fef2f2;
-  --status-stale-fg: #991b1b;
-  --code-bg: #f2f3f5;
-  /* Alert callouts reuse the status palette (note~review, tip~current,
-     warning~draft, caution~stale) and add only the one tone with no status
-     equivalent. */
-  --callout-important-bg: #eef2ff;
-  --callout-important-fg: #4338ca;
+  --bg: oklch(1 0 0); /* --bg-surface-1 */
+  --bg-raised: oklch(0.9848 0.0003 230.66); /* --bg-surface-2 */
+  --fg: oklch(0.2378 0.0029 230.83); /* --txt-primary */
+  --fg-muted: oklch(0.4377 0.0066 230.87); /* --txt-secondary */
+  --border: oklch(0.9389 0.0014 230.68); /* --border-subtle */
+  --link: oklch(0.4799 0.1158 242.91); /* --txt-accent-primary */
+  --status-draft-bg: oklch(0.9869 0.0214 95.28);
+  --status-draft-fg: oklch(0.4747 0.135757 44.9806);
+  --status-review-bg: oklch(0.9847 0.0083 236.56);
+  --status-review-fg: oklch(0.4799 0.1158 242.91);
+  --status-current-bg: oklch(0.9819 0.0181 155.83);
+  --status-current-fg: oklch(0.4468 0.1187 151.4);
+  --status-stale-bg: oklch(0.9705 0.0129 17.38);
+  --status-stale-fg: oklch(0.4446 0.1774 26.79);
+  --code-bg: oklch(0.9696 0.0007 230.67); /* --bg-layer-1 */
+  --banner-bg: oklch(0.583 0.238666 28.4765); /* --bg-danger-primary */
+  --banner-fg: oklch(1 0 0);
+
+  /* Plane has no visited-link or "important" callout token, so these come from its extended purple
+     primitives rather than from a semantic name. Purple carries no status meaning in this palette,
+     which is why it is free to take one here. */
+  --link-visited: oklch(0.5527 0.1361 288.8); /* --extended-color-purple-500 */
+  --callout-important-bg: oklch(0.981 0.0054 297.73); /* --extended-color-purple-25 */
+  --callout-important-fg: oklch(0.4895 0.157 286.65); /* --extended-color-purple-600 */
 }
 
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme='light']) {
-    --bg: #16181d;
-    --bg-raised: #1e2127;
-    --fg: #e7e9ee;
-    --fg-muted: #9aa3b2;
-    --border: #2b2f37;
-    --link: #7fa8ff;
-    --link-visited: #b79bec;
-    --status-draft-bg: #3a2f11;
-    --status-draft-fg: #f2c464;
-    --status-review-bg: #16273f;
-    --status-review-fg: #8fb8ff;
-    --status-current-bg: #0f2c22;
-    --status-current-fg: #6fd9ae;
-    --status-stale-bg: #3a1414;
-    --status-stale-fg: #f29b9b;
-    --code-bg: #21252c;
-    --callout-important-bg: #201c47;
-    --callout-important-fg: #b4beff;
+  :root:not([data-theme="light"]) {
+    --bg: oklch(0.1932 0.002 230.81);
+    --bg-raised: oklch(0.2158 0.0025 230.82);
+    --fg: oklch(0.9235 0.001733 230.6853);
+    --fg-muted: oklch(0.8455 0.0035 230.72);
+    --border: oklch(0.2593 0.0033 230.84);
+    --link: oklch(0.6311 0.126281 238.01);
+    --status-draft-bg: oklch(0.3042 0.0853 45.16);
+    --status-draft-fg: oklch(0.9244 0.1203 95.85);
+    --status-review-bg: oklch(0.2029 0.03 232.24);
+    --status-review-fg: oklch(0.6311 0.126281 238.01);
+    --status-current-bg: oklch(0.2721 0.067322 152.52);
+    --status-current-fg: oklch(0.9258 0.0845 155.86);
+    --status-stale-bg: oklch(0.2615 0.085 24.41);
+    --status-stale-fg: oklch(0.8834 0.0616 18.39);
+    --code-bg: oklch(0.2158 0.0025 230.82);
+    --banner-bg: oklch(0.4446 0.1774 26.79);
+    --banner-fg: oklch(1 0 0);
+    --link-visited: oklch(0.6978 0.0888 291.44);
+    --callout-important-bg: oklch(0.2861 0.0795 287.41);
+    --callout-important-fg: oklch(0.779 0.0639 293.01);
   }
 }
 
-:root[data-theme='dark'] {
-  --bg: #16181d;
-  --bg-raised: #1e2127;
-  --fg: #e7e9ee;
-  --fg-muted: #9aa3b2;
-  --border: #2b2f37;
-  --link: #7fa8ff;
-  --link-visited: #b79bec;
-  --status-draft-bg: #3a2f11;
-  --status-draft-fg: #f2c464;
-  --status-review-bg: #16273f;
-  --status-review-fg: #8fb8ff;
-  --status-current-bg: #0f2c22;
-  --status-current-fg: #6fd9ae;
-  --status-stale-bg: #3a1414;
-  --status-stale-fg: #f29b9b;
-  --code-bg: #21252c;
-  --callout-important-bg: #201c47;
-  --callout-important-fg: #b4beff;
+:root[data-theme="dark"] {
+  --bg: oklch(0.1932 0.002 230.81);
+  --bg-raised: oklch(0.2158 0.0025 230.82);
+  --fg: oklch(0.9235 0.001733 230.6853);
+  --fg-muted: oklch(0.8455 0.0035 230.72);
+  --border: oklch(0.2593 0.0033 230.84);
+  --link: oklch(0.6311 0.126281 238.01);
+  --status-draft-bg: oklch(0.3042 0.0853 45.16);
+  --status-draft-fg: oklch(0.9244 0.1203 95.85);
+  --status-review-bg: oklch(0.2029 0.03 232.24);
+  --status-review-fg: oklch(0.6311 0.126281 238.01);
+  --status-current-bg: oklch(0.2721 0.067322 152.52);
+  --status-current-fg: oklch(0.9258 0.0845 155.86);
+  --status-stale-bg: oklch(0.2615 0.085 24.41);
+  --status-stale-fg: oklch(0.8834 0.0616 18.39);
+  --code-bg: oklch(0.2158 0.0025 230.82);
+  --banner-bg: oklch(0.4446 0.1774 26.79);
+  --banner-fg: oklch(1 0 0);
+  --link-visited: oklch(0.6978 0.0888 291.44);
+  --callout-important-bg: oklch(0.2861 0.0795 287.41);
+  --callout-important-fg: oklch(0.779 0.0639 293.01);
 }
 
 * {
@@ -96,8 +115,8 @@ footer {
   position: sticky;
   top: 0;
   z-index: 20;
-  background: #b91c1c;
-  color: #fff;
+  background: var(--banner-bg);
+  color: var(--banner-fg);
   font-weight: 700;
   text-align: center;
   padding: 0.6rem 1rem;

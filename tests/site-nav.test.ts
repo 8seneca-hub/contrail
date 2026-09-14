@@ -25,8 +25,10 @@ describe('Task 5: persistent section nav', () => {
       const page = readFileSync(join(outDir, file), 'utf8')
       expect(page).toContain('class="section-nav"')
       expect(page).toContain('aria-label="Documentation sections"')
-      // Requirement 1: works with JavaScript disabled — plain links, no script at all.
-      expect(page).not.toContain('<script')
+      // Requirement 1: works with JavaScript disabled — the nav itself is a pure link list.
+      // (Task 1 adds a theme-bridge script elsewhere in <head>; it has nothing to do with the nav.)
+      const navBlock = /<nav class="section-nav"[^>]*>([\s\S]*?)<\/nav>/.exec(page)![1]!
+      expect(navBlock).not.toContain('<script')
     }
   })
 
@@ -95,14 +97,16 @@ describe('Task 5: persistent section nav', () => {
     }
   })
 
-  it('the index renders without JS: no <script> tag anywhere, and every nav entry is a plain <a>', async () => {
+  it('the index nav renders without JS: no <script> inside the nav, and every entry is a plain <a>', async () => {
     const root = mkdtempSync(join(tmpdir(), 'contrail-nav-nojs-'))
     const overview = writeAt(root, 'docs/01-overview/brief.md', FM())
     const outDir = join(root, 'out')
     await buildSite({ docs: [overview], outDir, cacheDir: join(root, '.cache') })
 
     const index = readFileSync(join(outDir, 'index.html'), 'utf8')
-    expect(index).not.toContain('<script')
+    // Task 1 adds a theme-bridge script to the page's <head>; the nav itself stays script-free.
+    const navBlock = /<nav class="section-nav"[^>]*>([\s\S]*?)<\/nav>/.exec(index)![1]!
+    expect(navBlock).not.toContain('<script')
     expect(index).not.toContain('role="tab"')
     expect(index).not.toContain('role="tablist"')
   })

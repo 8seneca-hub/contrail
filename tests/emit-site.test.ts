@@ -166,6 +166,21 @@ status: current
     expect(page).toContain('<link rel="stylesheet" href="site.css">')
   })
 
+  it('Task 1: reads ?theme from the query string and forwards it to nested diagram iframes', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'contrail-site-theme-'))
+    const doc = writeDoc(root, 'doc.md', `${FRONTMATTER}Body.\n`)
+    const outDir = join(root, 'out')
+    await buildSite({ docs: [doc], outDir, cacheDir: join(root, '.cache') })
+
+    const page = readFileSync(join(outDir, 'doc.html'), 'utf8')
+    const head = /<head>([\s\S]*?)<\/head>/.exec(page)![1]!
+    expect(head).toContain('<script>')
+    expect(head).toContain('URLSearchParams(location.search).get("theme")')
+    expect(head).toContain('document.documentElement.setAttribute("data-theme",t)')
+    // The opaque-origin iframe can't read Plane's theme itself, so the parent forwards it.
+    expect(head).toContain('u.searchParams.set("theme",t)')
+  })
+
   it('renders a mermaid diagram as an image and an artifact block as a captioned figure', async () => {
     const root = mkdtempSync(join(tmpdir(), 'contrail-site-mixed-'))
     writeFileSync(join(root, 'flow.png'), 'png-bytes')
