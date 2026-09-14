@@ -98,8 +98,9 @@ export interface SiteResult {
   pages: string[]
   /** Number of distinct diagram artifacts copied into the output. */
   diagrams: number
-  /** Number of `.md` files written alongside pages — one per page, the agent-readable
-   * counterpart `collectDocsFiles` (src/deploy/plane-docs.ts) picks up for upload. */
+  /** Number of `.md` files written alongside pages — one per page for a non-client build, the
+   * agent-readable counterpart `collectDocsFiles` (src/deploy/plane-docs.ts) picks up for
+   * upload. Always 0 for a `client` build — see the audience check around the write below. */
   markdownFiles: number
   /** Links rewritten to plain text because their target was excluded from this build. */
   defangedLinks: DefangedLink[]
@@ -935,11 +936,18 @@ export async function buildSite(args: {
     writeFileSync(pagePath, emitSite(doc, ctx))
     pages.push(doc.key)
 
-    // The agent-readable counterpart to the page just written, at the same path with
-    // `.md` in place of `.html`. `emitted` is already audience-filtered (see above), so a
-    // client build omits an internal document's `.md` for the same reason it omits its page.
-    writeFileSync(join(outDir, pageFile.replace(/\.html$/, '.md')), emitMarkdown(doc))
-    markdownFiles++
+    // `.md` ships only for a non-client build. `emitMarkdown` (src/emit/md.ts) has no
+    // equivalent of `transformLinks` above — it never visits `link` nodes at all — so it
+    // cannot defang a link into an excluded document the way this page's HTML just did. An
+    // unfiltered ("internal") build excludes nothing, so no href can leak that a hidden
+    // document exists; a `client` build DOES exclude internal documents, so writing their
+    // `.md` too would ship a raw, working `[text](03-management/budget.md)` link straight
+    // past the HTML defanging, the moment a client-visible document links to one. Do not
+    // lift this gate without first teaching `emitMarkdown` to defang links.
+    if (audience !== 'client') {
+      writeFileSync(join(outDir, pageFile.replace(/\.html$/, '.md')), emitMarkdown(doc))
+      markdownFiles++
+    }
   }
 
   writeFileSync(join(outDir, 'index.html'), emitIndex(ctx))

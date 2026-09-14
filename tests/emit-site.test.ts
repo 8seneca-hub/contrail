@@ -436,25 +436,32 @@ describe('Fix 5: the index groups documents by section', () => {
 })
 
 describe('Task 2: a .md file is emitted alongside every page', () => {
-  it("a build writes <page>.md next to <page>.html with the document's Markdown content", async () => {
+  it("a build writes <page>.md next to <page>.html with the document's Markdown content, including a nested page", async () => {
     const root = mkdtempSync(join(tmpdir(), 'contrail-site-md-'))
     const doc = writeDoc(root, 'doc.md', `${FRONTMATTER}Some **bold** prose.\n`)
+    mkdirSync(join(root, '03-management'), { recursive: true })
+    const nested = writeDoc(root, '03-management/foo.md', `${FRONTMATTER}Nested **prose**.\n`)
     const outDir = join(root, 'out')
 
-    const result = await buildSite({ docs: [doc], outDir, cacheDir: join(root, '.cache') })
+    const result = await buildSite({ docs: [doc, nested], outDir, cacheDir: join(root, '.cache') })
 
-    expect(result.markdownFiles).toBe(1)
+    expect(result.markdownFiles).toBe(2)
     expect(existsSync(join(outDir, 'doc.html'))).toBe(true)
     const md = readFileSync(join(outDir, 'doc.md'), 'utf8')
     expect(md).toContain('Some **bold** prose.')
+
+    // Directory handling: a nested page's .md lands next to its .html at the same nested path.
+    expect(existsSync(join(outDir, '03-management', 'foo.html'))).toBe(true)
+    const nestedMd = readFileSync(join(outDir, '03-management', 'foo.md'), 'utf8')
+    expect(nestedMd).toContain('Nested **prose**.')
   })
 
-  it('a --audience client build writes no .md for an internal-only document', async () => {
+  it('a --audience client build writes no .md at all, even for a client-visible document that links to an excluded one', async () => {
     const root = mkdtempSync(join(tmpdir(), 'contrail-site-md-audience-'))
     const clientDoc = writeDoc(
       root,
       'brief.md',
-      '---\ntitle: Brief\nsummary: S\nstatus: current\naudience: client\n---\n\nClient-visible.\n',
+      '---\ntitle: Brief\nsummary: S\nstatus: current\naudience: client\n---\n\nSee the [budget](budget.md) for detail.\n',
     )
     const internalDoc = writeDoc(
       root,
@@ -470,11 +477,18 @@ describe('Task 2: a .md file is emitted alongside every page', () => {
       audience: 'client',
     })
 
-    // Same filter, same reason as the page itself: an internal document's .md must not
-    // leak into a client build any more than its .html does.
-    expect(result.markdownFiles).toBe(1)
-    expect(existsSync(join(outDir, 'brief.md'))).toBe(true)
+    // emitMarkdown does not defang links the way emitSite's transformLinks does (it never
+    // visits `link` nodes), so a client build must write NO .md at all — not merely skip the
+    // excluded document's own .md — or the client-visible brief's raw link to the internal-only
+    // budget document would ship past the HTML defanging the moment this guard is weakened.
+    expect(result.markdownFiles).toBe(0)
+    expect(existsSync(join(outDir, 'brief.md'))).toBe(false)
     expect(existsSync(join(outDir, 'budget.md'))).toBe(false)
     expect(existsSync(join(outDir, 'budget.html'))).toBe(false)
+
+    // The HTML side already defangs this link; confirm the fixture actually exercises the leak
+    // scenario the .md gate exists to prevent.
+    const brief = readFileSync(join(outDir, 'brief.html'), 'utf8')
+    expect(brief).not.toContain('budget.md')
   })
 })
