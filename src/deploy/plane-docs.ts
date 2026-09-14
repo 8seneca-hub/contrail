@@ -111,7 +111,7 @@ function newBuildId(): string {
   return `${stamp}-${Math.random().toString(16).slice(2, 8)}`
 }
 
-const MARKDOWN_LINK = /\]\((https?:\/\/[^\s)]+)\)/g
+const MARKDOWN_LINK = /\]\((https?:\/\/[^\s)]+)\)/gi
 
 /**
  * `llms.txt` is the only thing an agent has to discover what documents exist and where to fetch
@@ -145,7 +145,7 @@ function assertLlmsTxtMatchesOrigin(localDir: string, baseUrl: string): void {
     `llms.txt in ${localDir} points ${foreign.length} entr${foreign.length === 1 ? 'y' : 'ies'} at ` +
       `${offending} instead of this deploy's target, ${expected}. The build was made with site.internalUrl ` +
       `(or clientUrl, for a client-audience build) set to that host and never rebuilt for Plane. Clear it and ` +
-      `rebuild before deploying — nothing was sent to Plane; the previous build is still live.`,
+      `rebuild before deploying — nothing was uploaded and no build was made live.`,
   )
 }
 

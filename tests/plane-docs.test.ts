@@ -194,6 +194,15 @@ describe('createPlaneDocsTransport', () => {
       expect(plane.fetchFn).not.toHaveBeenCalled()
     })
 
+    it('catches an uppercase scheme too — the match must not be case-sensitive', async () => {
+      const plane = fakePlane()
+      const dir = buildDir()
+      writeFileSync(join(dir, 'llms.txt'), '- [PRD](HTTPS://example.vercel.app/prd.html): summary\n')
+
+      await expect(transportFor(plane.fetchFn).push(dir, 'internal', {})).rejects.toThrow(DeployError)
+      expect(plane.fetchFn).not.toHaveBeenCalled()
+    })
+
     it('catches the same mis-configured build on a dry run', async () => {
       const plane = fakePlane()
       const dir = buildDir()
