@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, extname, join, posix, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -856,6 +856,18 @@ function isDirectoryReadme(doc: Doc): boolean {
   return doc.key.split('/').pop() === 'README.md'
 }
 
+/** Resolves symlinks the way `assertSafeToClean` needs: fully, so a comparison against it reflects
+ * where cleaning would actually touch disk. Falls back to the lexical path when `realpathSync`
+ * itself fails — a dangling symlink or a permissions error is not evidence of danger on its own,
+ * so this degrades to the plain path rather than blocking the build on an unrelated failure. */
+function realOrLexical(path: string): string {
+  try {
+    return realpathSync(path)
+  } catch {
+    return path
+  }
+}
+
 /**
  * Backstop for `cleanOutDir`: `outDir` must not resolve to the filesystem root or the caller's
  * home directory before its contents are recursively removed. `buildSite` has no notion of
@@ -863,13 +875,21 @@ function isDirectoryReadme(doc: Doc): boolean {
  * every misconfiguration — `siteOutDirFor` in cli.ts catches the realistic one (`--out .`
  * resolving to the contrail project root) before `outDir` ever reaches here — but a path this
  * degenerate is never a build output under any caller, so refusing outright costs nothing.
+ *
+ * The comparison is against the *real*, symlink-resolved path, not the lexical one: `resolve()`
+ * never dereferences a symlink, so an `outDir` that is (or sits under) a symlink — e.g. a `site`
+ * directory that is actually a symlink to the operator's home directory — would otherwise pass
+ * this check on the string alone while `readdirSync`/`rmSync` follow the symlink at the OS level
+ * and empty whatever it really points at. Resolving both sides with `realpathSync` closes that:
+ * the comparison is against where cleaning would actually happen.
  */
 function assertSafeToClean(outDir: string): void {
-  const resolved = resolve(outDir)
-  if (resolved === resolve('/') || resolved === homedir()) {
+  const real = realOrLexical(resolve(outDir))
+  const dangerous = new Set([realOrLexical(resolve('/')), realOrLexical(homedir())])
+  if (dangerous.has(real)) {
     throw new Error(
-      `Refusing to build into ${resolved} — cleaning it before the build would erase far more than ` +
-        'a build output. Point `outDir` at a dedicated build directory.',
+      `Refusing to build into ${outDir} — cleaning it before the build would erase far more than a ` +
+        `build output (it resolves to ${real}). Point \`outDir\` at a dedicated build directory.`,
     )
   }
 }

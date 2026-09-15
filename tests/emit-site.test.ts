@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -519,5 +519,33 @@ describe('finding 1(b): buildSite cleans its output directory before writing', (
 
     await expect(buildSite({ docs: [doc], outDir, cacheDir: join(root, '.cache') })).resolves.toBeDefined()
     expect(existsSync(join(outDir, 'doc.html'))).toBe(true)
+  })
+
+  // Re-review gap: `resolve()` is purely lexical, so a symlinked `outDir` (or one nested under a
+  // symlinked ancestor) sailed past the old string comparison while `rmSync` followed the
+  // symlink anyway and emptied whatever it really pointed at — e.g. a `site` directory that is
+  // actually a symlink to the operator's home directory. `HOME` is overridden to a throwaway
+  // fake directory (never the real one) so `homedir()` names it, then `outDir` is symlinked to
+  // that same fake directory — reproducing "outDir is a symlink to the home directory" without
+  // ever touching a real home directory.
+  it('refuses when outDir is a symlink to the operator\'s home directory, not just a literal path match', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'contrail-site-clean-symlink-'))
+    const fakeHome = mkdtempSync(join(tmpdir(), 'contrail-fake-home-'))
+    writeFileSync(join(fakeHome, 'do-not-delete.txt'), 'precious')
+    const outDir = join(root, 'site')
+    symlinkSync(fakeHome, outDir)
+
+    const originalHome = process.env.HOME
+    process.env.HOME = fakeHome
+    try {
+      const doc = writeDoc(root, 'doc.md', `${FRONTMATTER}Just prose.\n`)
+      await expect(buildSite({ docs: [doc], outDir, cacheDir: join(root, '.cache') })).rejects.toThrow(
+        /Refusing to build into/,
+      )
+    } finally {
+      process.env.HOME = originalHome
+    }
+
+    expect(existsSync(join(fakeHome, 'do-not-delete.txt'))).toBe(true)
   })
 })
