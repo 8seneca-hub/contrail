@@ -90,6 +90,46 @@ describe('collectDocsFiles', () => {
 
     expect(collectDocsFiles(dir).find((file) => file.path === 'notes.xyz')?.type).toBe('application/octet-stream')
   })
+
+  // Finding 5: the server's manifest validation (spec §5) has no `text/javascript` in its allowed
+  // set — an upload manifest listing it 400s in full, not just for that one file. `.js` must map
+  // to `application/javascript`, which the server does allow.
+  it('types a .js file as application/javascript, not the disallowed text/javascript', () => {
+    const dir = buildDir()
+    writeFileSync(join(dir, 'diagram-runtime.js'), 'console.log(1)')
+
+    expect(collectDocsFiles(dir).find((file) => file.path === 'diagram-runtime.js')?.type).toBe(
+      'application/javascript',
+    )
+  })
+
+  // Every entry in the extension-to-content-type map must be one the server's manifest validation
+  // actually allows: the exact set below, or anything prefixed image/ or font/ (spec §5). A type
+  // outside that set 400s the whole manifest, not just the offending file — so this is a
+  // regression guard against ever reintroducing one, not just against the one finding 5 found.
+  it('every mapped content type is one the server actually allows (spec §5)', () => {
+    const ALLOWED_EXACT = new Set([
+      'text/html',
+      'text/css',
+      'text/plain',
+      'text/markdown',
+      'application/javascript',
+      'application/json',
+    ])
+    const ALLOWED_PREFIXES = ['image/', 'font/']
+    const isAllowed = (type: string): boolean =>
+      ALLOWED_EXACT.has(type) || ALLOWED_PREFIXES.some((prefix) => type.startsWith(prefix))
+
+    const dir = buildDir()
+    const extensions = ['.html', '.css', '.js', '.json', '.svg', '.png', '.jpg', '.jpeg', '.webp', '.woff2', '.md', '.txt']
+    for (const ext of extensions) writeFileSync(join(dir, `sample${ext}`), 'x')
+
+    const sampleFiles = collectDocsFiles(dir).filter((file) => file.path.startsWith('sample'))
+    expect(sampleFiles).toHaveLength(extensions.length)
+    for (const file of sampleFiles) {
+      expect(isAllowed(file.type), `${file.path} -> ${file.type} is not in the server's allowed set`).toBe(true)
+    }
+  })
 })
 
 describe('createPlaneDocsTransport', () => {
@@ -189,7 +229,7 @@ describe('createPlaneDocsTransport', () => {
       )
 
       await expect(transportFor(plane.fetchFn).push(dir, 'internal', {})).rejects.toThrow(
-        /1 entry at https:\/\/example\.vercel\.app.*site\.internalUrl/s,
+        /1 entry with an absolute URL, first: https:\/\/example\.vercel\.app.*site\.internalUrl/s,
       )
       expect(plane.fetchFn).not.toHaveBeenCalled()
     })
@@ -222,7 +262,10 @@ describe('createPlaneDocsTransport', () => {
       expect(result.filesSent).toBe(4)
     })
 
-    it('pushes normally when llms.txt links are absolute against baseUrl itself', async () => {
+    // Plane serves docs under a workspace/project path prefix, never at the origin root — so a
+    // link that is merely same-origin as `baseUrl` still 404s once pushed, exactly like a foreign
+    // one. This used to be accepted; that was the bug (finding 2 of the whole-branch review).
+    it('still refuses an absolute link even when it names baseUrl itself — same-origin is not enough', async () => {
       const plane = fakePlane()
       const dir = buildDir()
       writeFileSync(
@@ -230,9 +273,10 @@ describe('createPlaneDocsTransport', () => {
         '- [PRD](https://projects.8seneca.com/04-technical/prd.html): summary\n',
       )
 
-      const result = await transportFor(plane.fetchFn).push(dir, 'internal', {})
-
-      expect(result.filesSent).toBe(4)
+      await expect(transportFor(plane.fetchFn).push(dir, 'internal', {})).rejects.toThrow(
+        /1 entry with an absolute URL, first: https:\/\/projects\.8seneca\.com.*site\.internalUrl/s,
+      )
+      expect(plane.fetchFn).not.toHaveBeenCalled()
     })
 
     it('does not error when the build has no llms.txt at all', async () => {

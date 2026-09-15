@@ -2,14 +2,14 @@ import { existsSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import { globSync } from 'tinyglobby'
-import { buildLlmsTxt, checkDocs, checkExitCode, docStatusReport, writeLlmsTxt } from './check.js'
+import { checkDocs, checkExitCode, docStatusReport, writeLlmsTxt, writeSiteLlmsTxt } from './check.js'
 import { findConfigPath, loadConfig, readProjectMeta } from './config.js'
 import { contextEmptyMessage, contextQuery, contextRule, isTaskType, TASK_TYPES, type TaskType } from './context.js'
 import { defaultCliRunner, deploy, parseDeployAudience, parseDeployTarget } from './deploy.js'
 import { createRailwayTransport } from './deploy/railway.js'
 import { createPlaneDocsTransport } from './deploy/plane-docs.js'
 import type { DeployTransport } from './deploy/transport.js'
-import { buildSite, docsForAudience, pageFileFor } from './emit/site.js'
+import { buildSite, docsForAudience } from './emit/site.js'
 import { loadLock, saveLock } from './lock.js'
 import { parseDoc } from './parse.js'
 import { PlaneClient } from './plane/client.js'
@@ -137,22 +137,26 @@ export async function publishAndSave(args: {
   }
 }
 
-/** `--out` defaults to `<config.root>/site`; a relative `--out` resolves against `config.root`. */
-export function siteOutDirFor(config: Config, out: string | undefined): string {
-  return resolve(config.root, out ?? 'site')
-}
-
 /**
- * Where `site` writes its own filtered `llms.txt` — INSIDE the site output,
- * next to the pages it describes. This is Ruling 2: `site --audience client`
- * and a separate `check --index --audience client` are two commands whose
- * flags must agree, and a mismatched pair leaks an index of internal
- * documents. One command producing both halves of the artifact removes that
- * failure mode entirely. Standalone `check --index` is unaffected — it still
- * writes `docs/llms.txt` for the agent-facing tree.
+ * `--out` defaults to `<config.root>/site`; a relative `--out` resolves against `config.root`.
+ *
+ * Refuses when that resolves to `config.root` itself (an `--out .`, typically): `buildSite` now
+ * clears its output directory before every build (see the comment on `cleanOutDir` in
+ * `emit/site.ts`), and `config.root` is where `contrail.config.ts` and `docs/` live — the project
+ * this build reads from, not a build artifact. Catch it here, before any file is touched, rather
+ * than let `site`/`deploy` hand `buildSite` a directory whose "previous run's leftovers" are the
+ * entire project.
  */
-export function siteLlmsTxtPath(outDir: string): string {
-  return join(outDir, 'llms.txt')
+export function siteOutDirFor(config: Config, out: string | undefined): string {
+  const outDir = resolve(config.root, out ?? 'site')
+  if (outDir === resolve(config.root)) {
+    throw new Error(
+      `Refusing to use ${outDir} as the build output directory — it is the project root, where ` +
+        'contrail.config.ts and docs/ live. contrail clears this directory before every build, so ' +
+        'that would erase the project it just read from. Choose a subdirectory, e.g. `--out site`.',
+    )
+  }
+  return outDir
 }
 
 /**
@@ -383,18 +387,11 @@ export async function main(argv: string[]): Promise<number> {
       siteUrl,
     })
 
-    // Ruling 2: the same --audience filter that governed the pages governs
-    // this llms.txt too, written INTO the site output — one command, one
-    // self-consistent artifact. Links point at the emitted page files
-    // (`pageFileFor`), not the source .md paths, since only the pages exist
-    // at this location. Standalone `check --index` is untouched. `baseUrl`
-    // makes the links absolute when this build's own address is configured
-    // (Task 3): an agent can fetch a document directly instead of guessing.
-    const llmsPath = siteLlmsTxtPath(result.outDir)
-    writeFileSync(
-      llmsPath,
-      buildLlmsTxt(config, docsForAudience(allDocs, audience), { linkFor: (doc) => pageFileFor(doc.key), baseUrl: siteUrl }),
-    )
+    // Ruling 2: the same --audience filter that governed the pages governs this llms.txt too — see
+    // `writeSiteLlmsTxt` in check.ts, shared with both `contrail deploy` build paths. `baseUrl`
+    // makes the links absolute when this build's own address is configured (Task 3): an agent can
+    // fetch a document directly instead of guessing. Standalone `check --index` is untouched.
+    const llmsPath = writeSiteLlmsTxt(config, allDocs, audience, result.outDir, siteUrl)
 
     console.log(
       `Wrote ${result.pages.length} page(s), ${result.markdownFiles} markdown file(s), and ${result.diagrams} diagram(s) to ${result.outDir}`,

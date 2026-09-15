@@ -1,9 +1,10 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { assertBuildNotEmpty, deploy, parseDeployTarget } from '../src/deploy.js'
 import type { DeployTransport } from '../src/deploy/transport.js'
+import { buildSite } from '../src/emit/site.js'
 import { parseDoc } from '../src/parse.js'
 import type { Config, Doc } from '../src/types.js'
 
@@ -296,5 +297,63 @@ describe('contrail deploy --target railway', () => {
         runner: async () => ({ code: 0 }),
       }),
     ).rejects.toThrow(/createPlaneDocsTransport/)
+  })
+
+  // Finding 1(a): `llms.txt` was written only by `contrail site` — every self-hosted deploy path
+  // must write its own too, filtered by that deploy's own audience, or the build it pushes has no
+  // agent index at all.
+  it('writes llms.txt into the build output before pushing, filtered by the deploy audience', async () => {
+    const root = fixtureRoot()
+    const internalDoc = writeDoc(root, 'docs/03-management/budget.md')
+    const clientDoc = writeDoc(root, 'docs/01-overview/brief.md', 'audience: client\n')
+    const config = configFor(root, { target: 'plane', projectId: 'proj-123' })
+    const { transport } = fakeTransport()
+
+    await deploy({
+      config,
+      docs: [internalDoc, clientDoc],
+      audience: 'client',
+      target: 'plane',
+      transport,
+      runner: async () => ({ code: 0 }),
+    })
+
+    const llmsTxt = readFileSync(join(root, 'site', 'llms.txt'), 'utf8')
+    expect(llmsTxt).toContain('01-overview/brief.html')
+    expect(llmsTxt).not.toContain('03-management/budget.html')
+  })
+
+  // Finding 1(b): `contrail site` and `contrail deploy` resolve the same output directory
+  // (`siteOutDirFor`) when `--out` is omitted, and `buildSite` never used to clean it. So
+  // `contrail site` (unfiltered — every document, including internal-only ones) followed by
+  // `contrail deploy --audience client --target plane` into the same directory would upload the
+  // stale internal page and the stale internal llms.txt right alongside the client-only build —
+  // the exact leak this finding is about.
+  it('a stale internal page from a previous unfiltered `site` build does not survive into a client deploy sharing the same outDir', async () => {
+    const root = fixtureRoot()
+    const internalDoc = writeDoc(root, 'docs/03-management/budget.md')
+    const clientDoc = writeDoc(root, 'docs/01-overview/brief.md', 'audience: client\n')
+    const config = configFor(root, { target: 'plane', projectId: 'proj-123' })
+    const outDir = join(root, 'site')
+
+    // Simulate a prior `contrail site` run: unfiltered, so it writes the internal-only page.
+    await buildSite({ docs: [internalDoc, clientDoc], outDir, cacheDir: join(root, '.contrail', 'cache') })
+    expect(existsSync(join(outDir, '03-management', 'budget.html'))).toBe(true)
+
+    const { transport } = fakeTransport()
+    await deploy({
+      config,
+      docs: [internalDoc, clientDoc],
+      audience: 'client',
+      target: 'plane',
+      outDir,
+      transport,
+      runner: async () => ({ code: 0 }),
+    })
+
+    expect(existsSync(join(outDir, '03-management', 'budget.html'))).toBe(false)
+    expect(existsSync(join(outDir, '03-management'))).toBe(false)
+    const llmsTxt = readFileSync(join(outDir, 'llms.txt'), 'utf8')
+    expect(llmsTxt).not.toContain('03-management/budget.html')
   })
 })

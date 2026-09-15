@@ -23,10 +23,15 @@ import type { DeployTransport } from './transport.js'
  * nobody a half-finished site.
  */
 
+// Every value here must be one the server's manifest validation actually allows (spec §5): the
+// exact set `text/html`, `text/css`, `text/plain`, `text/markdown`, `application/javascript`,
+// `application/json`, plus anything prefixed `image/` or `font/`. One disallowed type 400s the
+// *entire* manifest, not just the file it belongs to — `text/javascript` (a real MIME type, just
+// not the one the server whitelists) was the one entry here that didn't match.
 const CONTENT_TYPES: Record<string, string> = {
   '.html': 'text/html',
   '.css': 'text/css',
-  '.js': 'text/javascript',
+  '.js': 'application/javascript',
   '.json': 'application/json',
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
@@ -115,13 +120,19 @@ const MARKDOWN_LINK = /\]\((https?:\/\/[^\s)]+)\)/gi
 
 /**
  * `llms.txt` is the only thing an agent has to discover what documents exist and where to fetch
- * them, so every link in it must resolve on the host this build is actually being pushed to.
- * `buildLlmsTxt` makes links absolute against `site.internalUrl`/`clientUrl` whenever either is
- * configured — right for the Vercel-hosted tree that setting was written for, wrong the moment the
- * same build is redeployed to Plane without clearing it. Nothing about the push itself would fail:
- * the upload and commit both succeed, and the index inside the finished build just names the wrong
- * host. An agent following it either 404s, or worse, silently reads a stale public copy of a
- * document that was supposed to come from behind Plane's project membership check.
+ * them, so every link in it must actually resolve once this build is pushed to Plane. Plane never
+ * serves docs at an origin root — every path lives under
+ * `/api/v1/workspaces/<slug>/projects/<id>/docs/` (see `endpoint` below) — so there is no absolute
+ * `http(s)` link this codebase can produce that resolves there, *same-origin included*:
+ * `buildLlmsTxt` makes a link absolute by joining `site.internalUrl`/`clientUrl` (an origin, e.g.
+ * `https://projects.8seneca.com`) straight onto the path, never onto that prefix. A link built
+ * that way 404s on Plane whether or not its host happens to match this deploy's — matching the
+ * origin was never sufficient, so this rejects every absolute link, not merely a foreign one.
+ *
+ * Nothing about the push itself would otherwise fail: the upload and commit both succeed, and the
+ * index inside the finished build just links nowhere useful. An agent following it either 404s, or
+ * worse — if the host happens to still serve the old Vercel build — silently reads a stale public
+ * copy of a document that was supposed to come from behind Plane's project membership check.
  *
  * Fixing this in `buildLlmsTxt` would be wrong: relative links already resolve correctly under the
  * docs prefix, because `llms.txt` sits beside the pages it names. This is a guard against a
@@ -132,20 +143,22 @@ function assertLlmsTxtMatchesOrigin(localDir: string, baseUrl: string): void {
   const path = join(localDir, 'llms.txt')
   if (!existsSync(path)) return
 
-  const expected = new URL(baseUrl).origin
-  const foreign = [...readFileSync(path, 'utf8').matchAll(MARKDOWN_LINK)]
-    .map((match) => match[1])
-    .filter((link): link is string => link !== undefined)
-    .map((link) => new URL(link).origin)
-    .filter((origin) => origin !== expected)
-  if (foreign.length === 0) return
+  const absolute = [
+    ...new Set(
+      [...readFileSync(path, 'utf8').matchAll(MARKDOWN_LINK)]
+        .map((match) => match[1])
+        .filter((link): link is string => link !== undefined),
+    ),
+  ]
+  if (absolute.length === 0) return
 
-  const offending = [...new Set(foreign)].join(', ')
   throw new DeployError(
-    `llms.txt in ${localDir} points ${foreign.length} entr${foreign.length === 1 ? 'y' : 'ies'} at ` +
-      `${offending} instead of this deploy's target, ${expected}. The build was made with site.internalUrl ` +
-      `(or clientUrl, for a client-audience build) set to that host and never rebuilt for Plane. Clear it and ` +
-      `rebuild before deploying — nothing was uploaded and no build was made live.`,
+    `llms.txt in ${localDir} links ${absolute.length} entr${absolute.length === 1 ? 'y' : 'ies'} with an ` +
+      `absolute URL, first: ${absolute[0]}. Plane serves docs under a workspace/project path prefix, never ` +
+      `at an origin root, so no absolute link resolves there — not even one naming this deploy's own target, ` +
+      `${new URL(baseUrl).origin}, itself. The build was made with site.internalUrl (or clientUrl, for a ` +
+      `client-audience build) set and never rebuilt for Plane. Clear it and rebuild before deploying — ` +
+      `nothing was uploaded and no build was made live.`,
   )
 }
 

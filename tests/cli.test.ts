@@ -446,6 +446,17 @@ describe('siteOutDirFor', () => {
   it('leaves an absolute --out untouched', () => {
     expect(siteOutDirFor(config, '/tmp/out')).toBe('/tmp/out')
   })
+
+  // `buildSite` now clears its output directory before every build (finding 1(b)) — an `--out`
+  // that resolves to the project root itself must never reach it, or a build would erase
+  // contrail.config.ts and docs/ along with whatever it thought was "the previous build".
+  it('refuses an --out that resolves to config.root itself', () => {
+    expect(() => siteOutDirFor(config, '.')).toThrow(/project root/)
+  })
+
+  it('refuses an --out that resolves to config.root itself via an absolute path', () => {
+    expect(() => siteOutDirFor(config, '/workspace')).toThrow(/project root/)
+  })
 })
 
 describe('site command (via main)', () => {

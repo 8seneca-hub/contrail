@@ -492,3 +492,32 @@ describe('Task 2: a .md file is emitted alongside every page', () => {
     expect(brief).not.toContain('budget.md')
   })
 })
+
+describe('finding 1(b): buildSite cleans its output directory before writing', () => {
+  it('a stale file from a previous build does not survive into the next one', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'contrail-site-clean-'))
+    const outDir = join(root, 'out')
+    mkdirSync(outDir, { recursive: true })
+    writeFileSync(join(outDir, 'stray.html'), '<html>leftover from a previous run</html>')
+    mkdirSync(join(outDir, '03-management'), { recursive: true })
+    writeFileSync(join(outDir, '03-management', 'budget.html'), '<html>a removed document’s old page</html>')
+
+    const doc = writeDoc(root, 'doc.md', `${FRONTMATTER}Just prose.\n`)
+    await buildSite({ docs: [doc], outDir, cacheDir: join(root, '.cache') })
+
+    expect(existsSync(join(outDir, 'stray.html'))).toBe(false)
+    expect(existsSync(join(outDir, '03-management'))).toBe(false)
+    // The new build's own output still lands normally — cleaning is not a no-op that also skips
+    // writing.
+    expect(existsSync(join(outDir, 'doc.html'))).toBe(true)
+  })
+
+  it('a first build into a directory that does not exist yet needs no special case', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'contrail-site-clean-fresh-'))
+    const outDir = join(root, 'brand-new', 'out')
+    const doc = writeDoc(root, 'doc.md', `${FRONTMATTER}Just prose.\n`)
+
+    await expect(buildSite({ docs: [doc], outDir, cacheDir: join(root, '.cache') })).resolves.toBeDefined()
+    expect(existsSync(join(outDir, 'doc.html'))).toBe(true)
+  })
+})

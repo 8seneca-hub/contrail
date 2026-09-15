@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { join } from 'node:path'
+import { writeSiteLlmsTxt } from './check.js'
 import { buildSite, docsForAudience } from './emit/site.js'
 import type { DeployTransport } from './deploy/transport.js'
 import type { Audience, Config, Doc } from './types.js'
@@ -281,6 +282,12 @@ export async function deploy(options: DeployOptions): Promise<DeployResult> {
     cacheDir: join(options.config.root, '.contrail', 'cache'),
     audience: siteAudienceFor(audience),
   })
+  // `llms.txt` is the only thing an agent has to discover what documents exist
+  // (docs/plane-docs-api-spec.md) — every build path writes it, not just `contrail site`, using the
+  // same audience that just filtered the pages. No `baseUrl`: unlike `contrail site`, `deploy`
+  // never bakes `site.internalUrl`/`clientUrl` into the pages it builds either, so this index stays
+  // relative to match them.
+  writeSiteLlmsTxt(options.config, options.docs, siteAudienceFor(audience), outDir)
 
   const command = ['deploy', '--prebuilt', outDir, ...(options.prod ? ['--prod'] : [])]
   const fileCount = countFiles(outDir)
@@ -333,6 +340,9 @@ async function deploySelfhost(
     cacheDir: join(options.config.root, '.contrail', 'cache'),
     audience: siteAudienceFor(audience),
   })
+  // Same as the vercel path above: every build path writes its own llms.txt, relative-only since
+  // this build bakes in no absolute site address either.
+  writeSiteLlmsTxt(options.config, options.docs, siteAudienceFor(audience), outDir)
 
   // Empty-build guard runs after the build, before the transport is ever touched.
   assertBuildNotEmpty(outDir)

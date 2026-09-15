@@ -1,4 +1,5 @@
-import { copyFileSync, mkdirSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { dirname, extname, join, posix, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import rehypeStringify from 'rehype-stringify'
@@ -621,8 +622,11 @@ function canonicalFor(ctx: SiteEmitContext, pageFile: string): string | undefine
  * origin, so the page cannot read Plane's theme via `postMessage` or storage — Plane passes it as
  * `?theme=dark|light` instead. The second half forwards the same parameter to nested diagram
  * iframes so a page and its diagrams never disagree; without it both fall back to
- * `prefers-color-scheme` and mismatch whenever the reader's Plane theme differs from their OS. */
-const THEME_SCRIPT = `<script>(function(){var t=new URLSearchParams(location.search).get("theme");
+ * `prefers-color-scheme` and mismatch whenever the reader's Plane theme differs from their OS.
+ * Exported so a test asserting a page contains it can reference this constant instead of
+ * duplicating the literal — reformatting this script would otherwise break every duplicate in
+ * lockstep with this one. */
+export const THEME_SCRIPT = `<script>(function(){var t=new URLSearchParams(location.search).get("theme");
 if(t!=="dark"&&t!=="light")return;
 document.documentElement.setAttribute("data-theme",t);
 addEventListener("DOMContentLoaded",function(){
@@ -852,6 +856,44 @@ function isDirectoryReadme(doc: Doc): boolean {
   return doc.key.split('/').pop() === 'README.md'
 }
 
+/**
+ * Backstop for `cleanOutDir`: `outDir` must not resolve to the filesystem root or the caller's
+ * home directory before its contents are recursively removed. `buildSite` has no notion of
+ * "project root" (it only ever sees the directory it is told to build into), so it cannot catch
+ * every misconfiguration — `siteOutDirFor` in cli.ts catches the realistic one (`--out .`
+ * resolving to the contrail project root) before `outDir` ever reaches here — but a path this
+ * degenerate is never a build output under any caller, so refusing outright costs nothing.
+ */
+function assertSafeToClean(outDir: string): void {
+  const resolved = resolve(outDir)
+  if (resolved === resolve('/') || resolved === homedir()) {
+    throw new Error(
+      `Refusing to build into ${resolved} — cleaning it before the build would erase far more than ` +
+        'a build output. Point `outDir` at a dedicated build directory.',
+    )
+  }
+}
+
+/**
+ * `buildSite`'s output directory is shared across runs — `contrail site` and every `contrail
+ * deploy` build path resolve it the same way (`siteOutDirFor` in cli.ts) — so a document removed,
+ * renamed, or reclassified since the last build would otherwise leave its old page (or, worse, an
+ * internal-only page from an earlier unfiltered build) sitting in the output next to this run's
+ * pages. Nothing here tracks what a previous run wrote, so the only reliable fix is to clear
+ * everything already there before writing anything new.
+ *
+ * Only entries *inside* `outDir` are ever removed (one `readdirSync` result at a time) — `outDir`
+ * itself is left in place, untouched if it does not exist yet, so a first build needs no special
+ * case.
+ */
+function cleanOutDir(outDir: string): void {
+  if (!existsSync(outDir)) return
+  assertSafeToClean(outDir)
+  for (const entry of readdirSync(outDir)) {
+    rmSync(join(outDir, entry), { recursive: true, force: true })
+  }
+}
+
 export async function buildSite(args: {
   /** Every document contrail knows about — not just the ones being emitted.
    * The full set is required even for a filtered build, so link defanging
@@ -880,6 +922,7 @@ export async function buildSite(args: {
     ] as const),
   )
 
+  cleanOutDir(outDir)
   mkdirSync(outDir, { recursive: true })
   mkdirSync(join(outDir, 'diagrams'), { recursive: true })
   mkdirSync(join(outDir, 'assets'), { recursive: true })
@@ -938,12 +981,15 @@ export async function buildSite(args: {
 
     // `.md` ships only for a non-client build. `emitMarkdown` (src/emit/md.ts) has no
     // equivalent of `transformLinks` above — it never visits `link` nodes at all — so it
-    // cannot defang a link into an excluded document the way this page's HTML just did. An
-    // unfiltered ("internal") build excludes nothing, so no href can leak that a hidden
-    // document exists; a `client` build DOES exclude internal documents, so writing their
-    // `.md` too would ship a raw, working `[text](03-management/budget.md)` link straight
-    // past the HTML defanging, the moment a client-visible document links to one. Do not
-    // lift this gate without first teaching `emitMarkdown` to defang links.
+    // cannot defang a link into an excluded document the way this page's HTML just did. A build
+    // with `audience` left `undefined` — the only way `.md` is written, per the gate below —
+    // excludes nothing, so no href can leak that a hidden document exists; a `client` build DOES
+    // exclude internal documents, so writing their `.md` too would ship a raw, working
+    // `[text](03-management/budget.md)` link straight past the HTML defanging, the moment a
+    // client-visible document links to one. (An explicit `audience: 'internal'` build also
+    // excludes documents — `docsForAudience` filters on it same as `'client'` — but this gate
+    // only ever distinguishes `'client'` from everything else, so that case is not this comment's
+    // concern.) Do not lift this gate without first teaching `emitMarkdown` to defang links.
     if (audience !== 'client') {
       writeFileSync(join(outDir, pageFile.replace(/\.html$/, '.md')), emitMarkdown(doc))
       markdownFiles++

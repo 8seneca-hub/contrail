@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { buildSite } from '../src/emit/site.js'
+import { buildSite, THEME_SCRIPT } from '../src/emit/site.js'
 import { parseDoc } from '../src/parse.js'
 
 function writeAt(root: string, rel: string, frontmatter: string) {
@@ -29,7 +29,7 @@ describe('Task 5: persistent section nav', () => {
       // bridge, which just sets data-theme and forwards ?theme to iframes. No content depends on it.
       const scriptOccurrences = page.match(/<script/g) ?? []
       expect(scriptOccurrences).toHaveLength(1)
-      expect(page).toContain('<script>(function(){var t=new URLSearchParams(location.search).get("theme");')
+      expect(page).toContain(THEME_SCRIPT)
     }
   })
 
@@ -109,7 +109,7 @@ describe('Task 5: persistent section nav', () => {
     // theme bridge; no content depends on JS running.
     const scriptOccurrences = index.match(/<script/g) ?? []
     expect(scriptOccurrences).toHaveLength(1)
-    expect(index).toContain('<script>(function(){var t=new URLSearchParams(location.search).get("theme");')
+    expect(index).toContain(THEME_SCRIPT)
     expect(index).not.toContain('role="tab"')
     expect(index).not.toContain('role="tablist"')
   })

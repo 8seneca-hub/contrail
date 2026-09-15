@@ -12,8 +12,9 @@ import {
   type DocKind,
   type Section,
 } from './doc-kinds.js'
+import { docsForAudience, pageFileFor } from './emit/site.js'
 import { CORE_DOC_KINDS } from './scaffold.js'
-import type { Config, Doc } from './types.js'
+import type { Audience, Config, Doc } from './types.js'
 
 export interface Finding {
   doc: string
@@ -751,5 +752,42 @@ export function writeLlmsTxt(config: Config, docs: Doc[]): string {
   const path = llmsTxtPath(config)
   mkdirSync(dirname(path), { recursive: true })
   writeFileSync(path, buildLlmsTxt(config, docs))
+  return path
+}
+
+/**
+ * Writes this build's own `llms.txt` INTO a site output directory, next to the pages it describes
+ * — Ruling 2: the same `audience` that governed which pages a build wrote governs this index too,
+ * one write producing both halves of the artifact so they can never disagree the way a build and a
+ * separately-run `check --index` could. Links point at the emitted page files (`pageFileFor`), not
+ * the source `.md` paths, since only the pages exist at this location.
+ *
+ * Every builder of a site output directory calls this explicitly — `contrail site` and both
+ * `contrail deploy` build paths (vercel and self-hosted) — rather than `buildSite` writing it
+ * internally: `buildSite` has no dependency on `Config` today (it takes the individual fields it
+ * needs, like `projectName`), and pulling in `Config` just for this build's title fallback
+ * (`llmsTxtTitle`'s `basename(config.root)` case) would be a new coupling for one caller's benefit.
+ * Three call sites sharing one implementation gets the "no future caller can forget" property this
+ * is really after, without that coupling. `llms.txt` is "the only thing an agent has to discover
+ * what documents exist" (`docs/plane-docs-api-spec.md`) — a build that skips this is not usable by
+ * the agent-facing half of this feature at all.
+ *
+ * `baseUrl` is optional and, unlike `contrail site`, every `contrail deploy` call site omits it:
+ * `deploy` never bakes `site.internalUrl`/`clientUrl` into the pages it builds either (no target's
+ * final address is knowable at build time the way it is for the standalone `site` command), so its
+ * copy of `llms.txt` stays relative too, matching the pages it sits beside.
+ */
+export function writeSiteLlmsTxt(
+  config: Config,
+  docs: Doc[],
+  audience: Audience | undefined,
+  outDir: string,
+  baseUrl?: string,
+): string {
+  const path = join(outDir, 'llms.txt')
+  writeFileSync(
+    path,
+    buildLlmsTxt(config, docsForAudience(docs, audience), { linkFor: (doc) => pageFileFor(doc.key), baseUrl }),
+  )
   return path
 }
