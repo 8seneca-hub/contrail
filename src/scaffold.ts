@@ -13,6 +13,42 @@ export const CONFIG_TEMPLATE = `export default {
 }
 `
 
+export interface PlaneTarget {
+  baseUrl: string
+  workspace: string
+  projectId: string
+}
+
+/** The config file for a project already wired to a Plane project.
+ *
+ * No API key: it is read from `PLANE_API_KEY` and must never reach a file that
+ * can be committed.
+ */
+export function renderConfig(plane?: PlaneTarget): string {
+  if (!plane) return CONFIG_TEMPLATE
+  return `export default {
+  plane: {
+    baseUrl: '${plane.baseUrl}',
+    workspace: '${plane.workspace}',
+  },
+  repos: {},
+  docs: ['./docs/**/*.md', './*/docs/**/*.md'],
+  selfhost: {
+    target: 'plane',
+    projectId: '${plane.projectId}',
+  },
+}
+`
+}
+
+/** A Plane project identifier derived from its name: uppercase alphanumerics,
+ * capped at Plane's 12-character column. Returns undefined when the name holds
+ * nothing usable, so the caller can ask for one rather than invent it. */
+export function deriveIdentifier(name: string): string | undefined {
+  const letters = name.toUpperCase().replace(/[^A-Z0-9]/g, '')
+  return letters.length > 0 ? letters.slice(0, 12) : undefined
+}
+
 interface DocKindMeta {
   title: string
   kind: DiataxisKind
@@ -559,6 +595,9 @@ export interface InitTemplateOptions {
   client?: string
   project?: string
   startDate?: string
+  /** Present when `init` created or was pointed at a Plane project, so the
+   * config it writes is already wired to deploy. */
+  plane?: PlaneTarget
 }
 
 /**
@@ -570,7 +609,7 @@ export interface InitTemplateOptions {
 export function runInitTemplate(cwd: string, opts: InitTemplateOptions = {}): ScaffoldResult {
   const result: ScaffoldResult = { created: [], skipped: [] }
 
-  writeIfAbsent(join(cwd, 'contrail.config.ts'), CONFIG_TEMPLATE, 'contrail.config.ts', result)
+  writeIfAbsent(join(cwd, 'contrail.config.ts'), renderConfig(opts.plane), 'contrail.config.ts', result)
 
   const docsRoot = join(cwd, 'docs')
   const meta = {

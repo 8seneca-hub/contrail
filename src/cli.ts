@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { existsSync, realpathSync, writeFileSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { basename, join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import { globSync } from 'tinyglobby'
 import { checkDocs, checkExitCode, docStatusReport, writeLlmsTxt, writeSiteLlmsTxt } from './check.js'
@@ -13,10 +13,17 @@ import type { DeployTransport } from './deploy/transport.js'
 import { buildSite, docsForAudience } from './emit/site.js'
 import { loadLock, saveLock } from './lock.js'
 import { parseDoc } from './parse.js'
-import { PlaneClient } from './plane/client.js'
+import { PlaneApiError, PlaneClient } from './plane/client.js'
 import { publishDocs, type PublishOptions, type PublishResult } from './plane/publish.js'
-import type { PlaneApi } from './plane/client.js'
-import { CONFIG_TEMPLATE, runInitTemplate, scaffoldDoc, type ScaffoldResult } from './scaffold.js'
+import type { PlaneApi, PlaneProjectApi } from './plane/client.js'
+import {
+  CONFIG_TEMPLATE,
+  deriveIdentifier,
+  runInitTemplate,
+  scaffoldDoc,
+  type PlaneTarget,
+  type ScaffoldResult,
+} from './scaffold.js'
 import { credentialsPathFor, createGoogleSheetsClient } from './sheets/client.js'
 import { pullSheets, pushSheets, type PullResult, type PushResult } from './sheets/sync.js'
 import type { Audience, Config, Doc, Lock } from './types.js'
@@ -220,6 +227,57 @@ function requireApiKey(): string {
   return key
 }
 
+export interface PlaneTargetRequest {
+  baseUrl?: string
+  workspace?: string
+  projectId?: string
+  name: string
+  identifier?: string
+}
+
+/** Resolve the Plane project `init` should wire the new config to, creating it
+ * when no `--project-id` was given.
+ *
+ * `--plane-url` and `--workspace` are required together: a base URL with no
+ * workspace addresses nothing, and skipping the Plane step on a half-given pair
+ * would leave a config that looks wired and is not.
+ */
+export async function resolvePlaneTarget(
+  request: PlaneTargetRequest,
+  createClient: (opts: { baseUrl: string; workspace: string; apiKey: string }) => PlaneProjectApi = (opts) =>
+    new PlaneClient(opts),
+): Promise<PlaneTarget> {
+  const { baseUrl, workspace } = request
+  if (!baseUrl || !workspace) {
+    throw new Error('--plane-url and --workspace must be given together.')
+  }
+
+  const normalisedBaseUrl = baseUrl.replace(/\/+$/, '')
+  if (request.projectId) {
+    return { baseUrl: normalisedBaseUrl, workspace, projectId: request.projectId }
+  }
+
+  const identifier = request.identifier ?? deriveIdentifier(request.name)
+  if (!identifier) {
+    throw new Error(`Cannot derive a Plane project identifier from '${request.name}'. Pass --identifier.`)
+  }
+
+  const client = createClient({ baseUrl: normalisedBaseUrl, workspace, apiKey: requireApiKey() })
+  try {
+    const project = await client.createProject({ name: request.name, identifier })
+    return { baseUrl: normalisedBaseUrl, workspace, projectId: project.id }
+  } catch (error) {
+    if (error instanceof PlaneApiError && error.status === 409) {
+      throw new Error(
+        `Plane already has a project with identifier '${identifier}' in workspace '${workspace}'. ` +
+          'Pass --identifier for a different one, or --project-id to write docs into the existing project.',
+        { cause: error },
+      )
+    }
+    throw error
+  }
+}
+
 export async function main(argv: string[]): Promise<number> {
   const { positionals, values } = parseArgs({
     args: argv,
@@ -240,6 +298,10 @@ export async function main(argv: string[]): Promise<number> {
       client: { type: 'string' },
       project: { type: 'string' },
       'start-date': { type: 'string' },
+      'plane-url': { type: 'string' },
+      workspace: { type: 'string' },
+      identifier: { type: 'string' },
+      'project-id': { type: 'string' },
       task: { type: 'string' },
       limit: { type: 'string' },
     },
@@ -249,7 +311,9 @@ export async function main(argv: string[]): Promise<number> {
 
   if (command === 'help') {
     console.log(
-      'contrail init [--template agency-project] | build | status [--json] | ' +
+      'contrail init [--template agency-project] ' +
+        '[--plane-url <url> --workspace <slug> [--project <name>] [--identifier <KEY>] [--project-id <uuid>]] | ' +
+        'build | status [--json] | ' +
         'publish [--dry-run] [--force] [--only <substring>] [--audience client] | ' +
         'site [--out <dir>] [--audience client] | check [--strict] [--index] [--audience client] [--json] | ' +
         'scaffold <docKind> <path> [--json] | sheet pull <doc> | sheet push <doc> [--force] | ' +
@@ -268,12 +332,34 @@ export async function main(argv: string[]): Promise<number> {
       console.error(`Unknown template '${values.template}'. Only 'agency-project' is supported.`)
       return 2
     }
+    const projectName = values.project ?? basename(process.cwd())
+    let plane: PlaneTarget | undefined
+    if (values['plane-url'] !== undefined || values.workspace !== undefined) {
+      try {
+        plane = await resolvePlaneTarget({
+          baseUrl: values['plane-url'],
+          workspace: values.workspace,
+          projectId: values['project-id'],
+          name: projectName,
+          identifier: values.identifier,
+        })
+      } catch (error) {
+        console.error(error instanceof Error ? error.message : String(error))
+        return 1
+      }
+    }
+
     const result = runInitTemplate(process.cwd(), {
       client: values.client,
       project: values.project,
       startDate: values['start-date'],
+      plane,
     })
     for (const line of scaffoldReportLines(result)) console.log(line)
+    if (plane) {
+      console.log(`Plane project  ${plane.projectId}`)
+      console.log(`Docs tab       ${plane.baseUrl}/${plane.workspace}/projects/${plane.projectId}/docs/`)
+    }
     return 0
   }
 
