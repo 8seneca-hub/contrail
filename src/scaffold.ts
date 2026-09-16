@@ -393,6 +393,14 @@ function deriveCollectionTitle(docKind: DocKind, filenameStem: string): string |
   return `${match[1]} — ${spelledDate(new Date().toISOString().slice(0, 10))}`
 }
 
+/** The guiding questions a scaffolded document of this kind asks. Exported so
+ * that `unanswered-stub` can quote the questions a document is still ducking,
+ * and `init` can hand them over as work, from this one definition — a second
+ * copy of the questions would drift from the scaffold within a release. */
+export function guidingQuestions(docKind: DocKind): readonly string[] {
+  return DOC_KIND_META[docKind].questions
+}
+
 /** Renders a scaffolded document: correct frontmatter plus a short prompt —
  * a few guiding questions, never a lecture — describing what belongs here.
  * `targetPath`, when given, lets a collection docKind (Task 7) derive its
@@ -577,6 +585,35 @@ function renderProjectYml(meta: { client: string; project: string; startDate: st
 export interface ScaffoldResult {
   created: string[]
   skipped: string[]
+}
+
+/** The work a fresh scaffold just created, stated as the questions each new
+ * document has to answer.
+ *
+ * `init` reports this because the alternative is what actually happens
+ * otherwise: the tree gets published with its placeholder pages intact,
+ * because nobody reading a list of `CREATED` paths can see which of them are
+ * questions waiting for answers. Only the template's docKind-bearing files
+ * appear — the config, the metadata file and the folder READMEs have no
+ * questions to answer. */
+export function guidingQuestionReportLines(result: ScaffoldResult): string[] {
+  const created = new Set(result.created)
+  const pending = DOC_FILES.filter((file) => created.has(`docs/${file.path}`))
+  if (pending.length === 0) return []
+
+  const lines = [
+    '',
+    `${pending.length} document(s) ask guiding questions that are not answered yet. Answer each one,`,
+    'or set `unanswered: "<why not>"` in its frontmatter to record what is missing. `contrail deploy`',
+    'refuses until one of the two is true for every document.',
+    '',
+  ]
+  for (const file of pending) {
+    lines.push(`docs/${file.path}`)
+    lines.push(...guidingQuestions(file.docKind).map((question) => `  - ${question}`))
+    lines.push('')
+  }
+  return lines
 }
 
 /** Writes `contents` to `absPath` unless it already exists. Never

@@ -28,6 +28,15 @@ export interface Frontmatter {
   section?: Section
   docKind?: DocKind
   owner?: string
+  /**
+   * Why this document's guiding questions are not answered yet. Set it and
+   * `unanswered-stub` stops firing, so a deploy is no longer blocked — the
+   * escape hatch exists so that "the client never told us" can be recorded
+   * as a fact instead of papered over with invented prose, which is the
+   * failure this whole rule exists to prevent. The reason is the payload:
+   * an empty one is rejected at parse time.
+   */
+  unanswered?: string
   /** ISO date; feeds a staleness rule later. */
   reviewedOn?: string
   /** Provenance — which client artefact this document's content came from. */

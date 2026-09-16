@@ -64,7 +64,7 @@ describe('Ruling 1: content rules skip a document still in stub state', () => {
     expect(findingsFor('flow-without-diagram', [d])).toHaveLength(1)
   })
 
-  it('a fresh `init --template agency-project` tree reports ZERO findings end to end', () => {
+  it('a fresh `init --template agency-project` tree reports NOTHING BUT unanswered-stub', () => {
     const root = mkdtempSync(join(tmpdir(), 'contrail-fresh-scaffold-'))
     runInitTemplate(root, { client: 'Acme', project: 'Demo', startDate: '2026-09-12' })
 
@@ -72,7 +72,75 @@ describe('Ruling 1: content rules skip a document still in stub state', () => {
     const docs = paths.map((p: string) => parseDoc(p, root))
 
     expect(docs.length).toBeGreaterThanOrEqual(30)
-    expect(checkDocs(docs)).toEqual([])
+    // The invariant this replaces asserted zero findings. A fresh tree now
+    // reports every unanswered document on purpose — that IS the feature.
+    // What must stay true is that NO OTHER rule fires on a fresh scaffold.
+    const findings = checkDocs(docs)
+    expect([...new Set(findings.map((f) => f.rule))]).toEqual(['unanswered-stub'])
+  })
+
+  it('one unanswered-stub per docKind-bearing document, and none for the folder READMEs', () => {
+    const root = mkdtempSync(join(tmpdir(), 'contrail-fresh-unanswered-'))
+    runInitTemplate(root, { client: 'Acme', project: 'Demo', startDate: '2026-09-12' })
+
+    const paths = globSync(['./docs/**/*.md'], { cwd: root, absolute: true }).sort()
+    const docs = paths.map((p: string) => parseDoc(p, root))
+    const flagged = new Set(findingsFor('unanswered-stub', docs).map((f) => f.doc))
+
+    for (const doc of docs) {
+      // A folder README carries no docKind: it is a pointer to a folder that
+      // fills on demand, so it is MEANT to stay a stub forever.
+      expect(flagged.has(doc.key)).toBe(doc.frontmatter.docKind !== undefined)
+    }
+    expect(flagged.size).toBeGreaterThan(20)
+  })
+})
+
+describe('unanswered-stub', () => {
+  it('fires on a scaffolded stub that records no reason, naming a guiding question', () => {
+    const d = writeDocAt('business-case.md', renderDocFile('business-case'))
+    const findings = findingsFor('unanswered-stub', [d])
+    expect(findings).toHaveLength(1)
+    expect(findings[0]?.severity).toBe('warn')
+    expect(findings[0]?.message).toContain('What is the expected benefit')
+  })
+
+  it('goes silent once `unanswered` records why — the escape hatch the deploy gate honours', () => {
+    const stub = renderDocFile('business-case').replace(
+      'status: draft',
+      'status: draft\nunanswered: "The source brief states no cost, no benefit and no approver."',
+    )
+    const d = writeDocAt('business-case.md', stub)
+    expect(findingsFor('unanswered-stub', [d])).toHaveLength(0)
+  })
+
+  it('does not fire on a document that actually answered its questions', () => {
+    const filled = `${renderDocFile('business-case')}
+The client expects to cut 40 staff-hours a month against a EUR 60k build.
+`
+    const d = writeDocAt('business-case.md', filled)
+    expect(findingsFor('unanswered-stub', [d])).toHaveLength(0)
+  })
+
+  it('fires in reverse on a filled document still carrying the marker — a stale excuse is a lie', () => {
+    const filled = `${renderDocFile('business-case').replace(
+      'status: draft',
+      'status: draft\nunanswered: "Nobody has told us the budget."',
+    )}
+The client expects to cut 40 staff-hours a month against a EUR 60k build.
+`
+    const d = writeDocAt('business-case.md', filled)
+    const findings = findingsFor('stale-unanswered', [d])
+    expect(findings).toHaveLength(1)
+    expect(findings[0]?.message).toMatch(/remove/i)
+  })
+
+  it('leaves a folder README alone: no docKind means it is meant to stay a stub', () => {
+    const d = writeDocAt(
+      'intake/README.md',
+      '---\ntitle: Intake\nsummary: Raw client material.\nstatus: draft\nsection: 01-overview\n---\n\n# Intake\n\n- What did the client hand over?\n',
+    )
+    expect(findingsFor('unanswered-stub', [d])).toHaveLength(0)
   })
 })
 
@@ -219,5 +287,22 @@ describe('docStatusReport — the documentation view behind `contrail status`', 
     expect(report.stubs).toEqual(['01-overview/charter.md'])
     expect(report.noOwner.sort()).toEqual(['01-overview/charter.md', '02-planning/scope-statement.md'])
     expect(report.missingCoreDocs.some((f) => f.doc === '02-planning')).toBe(true)
+  })
+})
+
+describe('docStatusReport.unanswered', () => {
+  it('counts the documents that still owe an answer, and not the ones that recorded a reason', () => {
+    const root = mkdtempSync(join(tmpdir(), 'contrail-report-unanswered-'))
+    mkdirSync(join(root, 'docs'), { recursive: true })
+    writeFileSync(join(root, 'docs', 'business-case.md'), renderDocFile('business-case'))
+    writeFileSync(
+      join(root, 'docs', 'budget.md'),
+      renderDocFile('budget').replace('status: draft', 'status: draft\nunanswered: "No figures from the client."'),
+    )
+    writeFileSync(join(root, 'docs', 'prd.md'), `${renderDocFile('prd')}\nWe are building a rota tool for canteens.\n`)
+
+    const docs = ['business-case.md', 'budget.md', 'prd.md'].map((f) => parseDoc(join(root, 'docs', f), root))
+
+    expect(docStatusReport(docs).unanswered).toEqual(['docs/business-case.md'])
   })
 })

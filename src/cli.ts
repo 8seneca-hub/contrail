@@ -21,6 +21,7 @@ import type { PlaneApi, PlaneProjectApi } from './plane/client.js'
 import {
   CONFIG_TEMPLATE,
   deriveIdentifier,
+  guidingQuestionReportLines,
   runInitTemplate,
   scaffoldDoc,
   type PlaneTarget,
@@ -413,6 +414,7 @@ export async function main(argv: string[]): Promise<number> {
       plane,
     })
     for (const line of scaffoldReportLines(result)) console.log(line)
+    for (const line of guidingQuestionReportLines(result)) console.log(line)
     if (plane) {
       console.log(`Plane project  ${plane.projectId}`)
       console.log(`Docs tab       ${plane.baseUrl}/${plane.workspace}/projects/${plane.projectId}/docs/`)
@@ -454,6 +456,24 @@ export async function main(argv: string[]): Promise<number> {
 
     const config = loadConfig(findConfigPath(process.cwd()))
     const allDocs = findDocs(config).map((path) => parseDoc(path, config.root))
+
+    // The unanswered gate runs BEFORE every other deploy guard, including the
+    // transport checks below: a tree whose documents still ask their guiding
+    // questions should not get far enough into a deploy to fail on a Vercel
+    // link. Only `unanswered-stub` blocks — the rest of `check` stays advisory,
+    // so this adds one refusal rather than making every warning fatal.
+    if (!values.force) {
+      const unanswered = checkDocs(allDocs).filter((f) => f.rule === 'unanswered-stub')
+      if (unanswered.length > 0) {
+        for (const finding of unanswered) console.error(formatFinding(finding))
+        console.error(
+          `Refusing to deploy: ${unanswered.length} document(s) leave their guiding questions ` +
+            'unanswered. Answer them, set `unanswered: "<why not>"` on each one to record what is ' +
+            'missing, or re-run with --force to publish them as they are.',
+        )
+        return 1
+      }
+    }
 
     // Only the self-hosted targets need a transport, and each one is built from the matching
     // `selfhost` config. `deploy()` itself reports the actionable error when the config is absent
@@ -640,6 +660,7 @@ export async function main(argv: string[]): Promise<number> {
     const stubs = new Set(report.stubs)
     const noOwner = new Set(report.noOwner)
     const overdue = new Set(report.overdue)
+    const unanswered = new Set(report.unanswered)
 
     const entries = docs.map((doc) => ({
       key: doc.key,
@@ -648,6 +669,7 @@ export async function main(argv: string[]): Promise<number> {
       stub: stubs.has(doc.key),
       noOwner: noOwner.has(doc.key),
       overdue: overdue.has(doc.key),
+      unanswered: unanswered.has(doc.key),
     }))
 
     if (values.json) {
@@ -655,14 +677,21 @@ export async function main(argv: string[]): Promise<number> {
         JSON.stringify({
           docs: entries,
           missingCoreDocs: report.missingCoreDocs.map((f) => ({ section: f.doc, message: f.message })),
-          summary: { stubs: report.stubs.length, noOwner: report.noOwner.length, overdue: report.overdue.length },
+          summary: {
+            stubs: report.stubs.length,
+            noOwner: report.noOwner.length,
+            overdue: report.overdue.length,
+            unanswered: report.unanswered.length,
+          },
         }),
       )
       return 0
     }
 
     for (const e of entries) {
-      const flags = [e.stub && 'stub', e.noOwner && 'no-owner', e.overdue && 'overdue'].filter(Boolean)
+      const flags = [e.stub && 'stub', e.unanswered && 'unanswered', e.noOwner && 'no-owner', e.overdue && 'overdue'].filter(
+        Boolean,
+      )
       console.log(
         `${e.pageId ?? 'unpublished'}  ${e.status.padEnd(8)}  ${e.key}${flags.length ? `  [${flags.join(',')}]` : ''}`,
       )

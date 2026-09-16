@@ -13,7 +13,7 @@ import {
   type Section,
 } from './doc-kinds.js'
 import { docsForAudience, pageFileFor } from './emit/site.js'
-import { CORE_DOC_KINDS } from './scaffold.js'
+import { CORE_DOC_KINDS, guidingQuestions } from './scaffold.js'
 import type { Audience, Config, Doc } from './types.js'
 
 export interface Finding {
@@ -466,13 +466,12 @@ export function pathSection(key: string): Section | undefined {
 }
 
 /**
- * A stub is not a problem by itself — a fresh `init --template` is nothing
- * BUT stubs, and that must lint clean. It becomes worth a warning only once
- * someone has promoted it past `draft` (review/current/stale) while the body
- * is still just the placeholder — a claim of progress the content doesn't
- * back up. This is also the ONE report a stub gets: the six content rules
- * above all skip a stub outright (see `checkDocs`), so a stub is never
- * double-reported.
+ * A stub whose `status` has been promoted past `draft` (review/current/stale)
+ * while the body is still the placeholder — a claim of progress the content
+ * doesn't back up. The six content rules skip a stub outright (see
+ * `checkDocs`), so the only reports a stub can earn are this one and
+ * `unanswered-stub` below, which answer different questions: this one is
+ * about a false status, that one about unanswered questions.
  */
 function checkEmptyStub(doc: Doc, findings: Finding[]): void {
   if (!isStub(doc)) return
@@ -484,6 +483,57 @@ function checkEmptyStub(doc: Doc, findings: Finding[]): void {
     message:
       `This document is marked \`status: ${doc.frontmatter.status}\` but still has only its scaffolded ` +
       'placeholder content (guiding questions/notes, no prose) — fill it in, or move it back to `status: draft`.',
+  })
+}
+
+/**
+ * A scaffolded document still asking its guiding questions, with no record of
+ * why. This is the rule a fresh `init` is SUPPOSED to light up: the questions
+ * are the work, and an unfilled document that publishes anyway is how a docs
+ * tree fills with placeholder pages nobody reads.
+ *
+ * Two deliberate exemptions:
+ *
+ * - No `docKind` means a folder README (`INDEX_STUBS` in scaffold.ts) — a
+ *   pointer to a folder that fills on demand, so it is meant to stay a stub.
+ * - An `unanswered` reason clears it. "The client never told us the budget"
+ *   is a real answer to a guiding question, and recording it beats the
+ *   alternative this rule exists to prevent: inventing a number that reads
+ *   like fact.
+ */
+function checkUnansweredStub(doc: Doc, findings: Finding[]): void {
+  if (!isStub(doc)) return
+  const docKind = doc.frontmatter.docKind
+  if (docKind === undefined) return
+  if (doc.frontmatter.unanswered !== undefined) return
+  const questions = guidingQuestions(docKind)
+  findings.push({
+    doc: doc.key,
+    rule: 'unanswered-stub',
+    severity: 'warn',
+    message:
+      'This document still asks its guiding questions and answers none of them: ' +
+      `${questions.join(' ')} ` +
+      'Answer them, or set `unanswered: "<why not>"` in the frontmatter to record what is missing. ' +
+      'A deploy is blocked until one of the two is true.',
+  })
+}
+
+/**
+ * The mirror of `unanswered-stub`: a document that grew real content but kept
+ * the excuse in its frontmatter. Left alone, the `unanswered` roster reports
+ * work as blocked long after it landed, which is worse than no roster.
+ */
+function checkStaleUnanswered(doc: Doc, findings: Finding[]): void {
+  if (doc.frontmatter.unanswered === undefined) return
+  if (isStub(doc)) return
+  findings.push({
+    doc: doc.key,
+    rule: 'stale-unanswered',
+    severity: 'warn',
+    message:
+      'This document has real content but still carries `unanswered` in its frontmatter — remove it, ' +
+      'or the unanswered roster keeps reporting finished work as blocked.',
   })
 }
 
@@ -615,6 +665,8 @@ export function checkDocs(docs: Doc[], opts: { strict?: boolean; internalUrl?: s
     checkClientDocLinksInternal(doc, opts.internalUrl, findings)
     checkTitleMissingDiscriminator(doc, findings)
     checkEmptyStub(doc, findings)
+    checkUnansweredStub(doc, findings)
+    checkStaleUnanswered(doc, findings)
     checkOrphanDoc(doc, findings)
     checkNoOwner(doc, findings)
     checkUnreviewed(doc, findings)
@@ -631,6 +683,9 @@ export interface DocStatusReport {
   noOwner: string[]
   /** Document keys `unreviewed` fired on. */
   overdue: string[]
+  /** Document keys `unanswered-stub` fired on: still asking their guiding
+   * questions, with no reason recorded. These are the ones a deploy refuses. */
+  unanswered: string[]
   /** `missing-core-doc` findings, one per absent core docKind. */
   missingCoreDocs: Finding[]
 }
@@ -648,6 +703,7 @@ export function docStatusReport(docs: Doc[]): DocStatusReport {
     stubs: docs.filter((doc) => isStub(doc)).map((doc) => doc.key),
     noOwner: docs.filter((doc) => !doc.frontmatter.owner).map((doc) => doc.key),
     overdue: findings.filter((f) => f.rule === 'unreviewed').map((f) => f.doc),
+    unanswered: findings.filter((f) => f.rule === 'unanswered-stub').map((f) => f.doc),
     missingCoreDocs: findings.filter((f) => f.rule === 'missing-core-doc'),
   }
 }

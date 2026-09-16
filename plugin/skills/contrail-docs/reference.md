@@ -14,9 +14,17 @@ kind: tutorial | how-to | reference | explanation   # optional, Diátaxis
 section: 00-meta | 01-overview | 02-planning | 03-management | 04-technical | 05-delivery
 docKind: see taxonomy below
 owner: string           # optional; expected once status leaves 'draft'
+unanswered: string      # optional; why the guiding questions have no answer yet
 reviewedOn: "YYYY-MM-DD"  # optional; quote it — unquoted YAML parses as a Date, not a string
 ---
 ```
+
+A scaffolded document arrives asking guiding questions. Answering them is the work; `contrail check`
+reports each one that is still nothing but its questions (`unanswered-stub`) and `contrail deploy`
+refuses while any remain. When the material genuinely does not answer a question, set `unanswered`
+to what is missing and what it is blocked on, and record the gap in `open-questions.md`. That is an
+answer. Inventing a figure, a name or a date to fill the space is not, and it is the failure the
+rule exists to prevent.
 
 Pick one `kind`. Mixing forms in one document — a how-to that stops to explain theory, an
 explanation that lists numbered steps — is the most common documentation failure. `contrail check`

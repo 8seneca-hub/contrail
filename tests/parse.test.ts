@@ -23,6 +23,43 @@ tags: [settlement]
 Body text.
 `
 
+describe('unanswered', () => {
+  const stub = (unanswered: string) => `---
+title: Business Case
+summary: Why this project is worth doing, in business terms.
+status: draft
+docKind: business-case
+unanswered: ${unanswered}
+---
+
+# Business Case
+
+## Guiding questions
+
+- What is the expected benefit, weighed against the cost?
+`
+
+  it('carries a reason string through onto the parsed document', () => {
+    const { root, path } = docFile(stub('"No cost or approver stated in the source brief."'))
+    expect(parseDoc(path, root).frontmatter.unanswered).toBe('No cost or approver stated in the source brief.')
+  })
+
+  it('rejects an empty reason — the point of the field is the reason', () => {
+    const { root, path } = docFile(stub('""'))
+    expect(() => parseDoc(path, root)).toThrow(/flow\.md.*unanswered.*non-empty/)
+  })
+
+  it('rejects a bare `true`, which records no reason at all', () => {
+    const { root, path } = docFile(stub('true'))
+    expect(() => parseDoc(path, root)).toThrow(/flow\.md.*unanswered.*string/)
+  })
+
+  it('is absent, not empty, on a document that does not use it', () => {
+    const { root, path } = docFile(VALID)
+    expect(parseDoc(path, root).frontmatter.unanswered).toBeUndefined()
+  })
+})
+
 describe('parseDoc', () => {
   it('parses frontmatter and body into a Doc', () => {
     const { root, path } = docFile(VALID)
