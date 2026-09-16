@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { diagramHash, renderMermaid } from '../src/render/mermaid.js'
+import { diagramHash, mmdcScript, renderMermaid } from '../src/render/mermaid.js'
 
 const SOURCE = 'graph TD;\n  A-->B;\n'
 
@@ -68,5 +68,22 @@ describe('renderMermaid', () => {
 
     expect(mmdc).not.toHaveBeenCalled()
     expect(readFileSync(mmdPath, 'utf8')).toBe('tampered')
+  })
+})
+
+describe('mmdcScript', () => {
+  it('resolves to a file that exists, independently of the working directory', () => {
+    // The bug this covers: the renderer shelled out to `npx mmdc`, which resolves
+    // from the *current* directory. A scaffolded docs project has no node_modules,
+    // so every diagram failed there while passing here. Changing directory to one
+    // without node_modules is the whole point of the assertion.
+    const elsewhere = mkdtempSync(join(tmpdir(), 'contrail-cwd-'))
+    const original = process.cwd()
+    try {
+      process.chdir(elsewhere)
+      expect(existsSync(mmdcScript())).toBe(true)
+    } finally {
+      process.chdir(original)
+    }
   })
 })
