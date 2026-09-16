@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { COLLECTION_META, DOC_KIND_SECTION, DOC_KINDS, isDocKind, type DocKind, type Section } from './doc-kinds.js'
 import type { DiataxisKind } from './types.js'
@@ -393,6 +393,120 @@ function deriveCollectionTitle(docKind: DocKind, filenameStem: string): string |
   return `${match[1]} — ${spelledDate(new Date().toISOString().slice(0, 10))}`
 }
 
+/** One round of the intake interview: the questions a person can answer in a
+ * single sitting, and the documents those answers fill.
+ *
+ * Grouped by conversation, NOT by section — sections split the money questions
+ * across three folders, so asking section by section makes a person answer
+ * "who approves spend" in round one and "what approval does an overage need"
+ * in round three. Grouping by theme also collapses the near-duplicates: four
+ * documents ask some form of "who decides", and they belong in one question. */
+export interface InterviewRound {
+  theme: string
+  docKinds: DocKind[]
+}
+
+/** The rounds themselves. Lives beside `DOC_KIND_META` on purpose: adding a
+ * docKind means deciding its questions and the conversation they belong to in
+ * the same edit. `tests/interview.test.ts` fails if a scaffolded docKind ends
+ * up in no round, so a new one cannot quietly vanish from the interview. */
+export const INTERVIEW_ROUNDS: readonly InterviewRound[] = [
+  {
+    theme: 'Mandate and money — who wants this, who pays, and what it is worth',
+    docKinds: ['charter', 'business-case', 'budget', 'approval', 'estimate'],
+  },
+  {
+    theme: 'People and cadence — who decides, who is told, and how often',
+    docKinds: ['stakeholders', 'communication-plan'],
+  },
+  {
+    theme: 'Scope and assumptions — what is in, what is out, what we are taking on faith',
+    docKinds: ['scope', 'wbs', 'assumptions'],
+  },
+  {
+    theme: 'Product and domain — the user problem, the success metric, the vocabulary',
+    docKinds: ['prd', 'domain-research', 'glossary'],
+  },
+  {
+    theme: 'Technical shape — components, interfaces, and what has already been tried',
+    docKinds: ['architecture', 'api-reference', 'prototype-registry'],
+  },
+  {
+    theme: 'Delivery and risk — dates, what could go wrong, and what "done" means',
+    docKinds: ['schedule', 'risk-log', 'test-plan', 'acceptance', 'deployment', 'closure'],
+  },
+]
+
+/** A document still waiting on answers, with the questions to put to a person. */
+export interface InterviewDocument {
+  key: string
+  docKind: DocKind
+  questions: readonly string[]
+}
+
+/** A round as asked: renumbered against the rounds that still have work. */
+export interface PendingRound {
+  number: number
+  of: number
+  theme: string
+  documents: InterviewDocument[]
+}
+
+/**
+ * The interview still outstanding in `root`, round by round.
+ *
+ * A document drops out as soon as it is settled — either it grew real content
+ * or it recorded an `unanswered` reason — so this is safe to call between
+ * rounds and drives a resumable loop rather than one long dump. Rounds are
+ * renumbered over what is left, because "round 1 of 2" is the truth a person
+ * needs and "round 4 of 6" is bookkeeping from an interview they already
+ * half-finished.
+ */
+export function interviewRounds(root: string): PendingRound[] {
+  const pendingByKind = new Map<DocKind, InterviewDocument[]>()
+  for (const file of DOC_FILES) {
+    const key = `docs/${file.path}`
+    const abs = join(root, key)
+    if (!existsSync(abs)) continue
+    if (isSettled(readFileSync(abs, 'utf8'))) continue
+    const list = pendingByKind.get(file.docKind) ?? []
+    list.push({ key, docKind: file.docKind, questions: guidingQuestions(file.docKind) })
+    pendingByKind.set(file.docKind, list)
+  }
+
+  const withWork = INTERVIEW_ROUNDS.map((round) => ({
+    theme: round.theme,
+    documents: round.docKinds.flatMap((kind) => pendingByKind.get(kind) ?? []),
+  })).filter((round) => round.documents.length > 0)
+
+  return withWork.map((round, index) => ({
+    number: index + 1,
+    of: withWork.length,
+    theme: round.theme,
+    documents: round.documents,
+  }))
+}
+
+/**
+ * Whether a scaffolded document needs nothing more from a person: it recorded
+ * an `unanswered` reason, or it has a paragraph of real prose.
+ *
+ * Read off the raw file rather than through `parseDoc` so that `scaffold.ts`
+ * does not depend on the parser (and, through it, on `check.ts`, which already
+ * imports from here). The shape is the one `renderDocFile` writes a few lines
+ * up, so the two stay honest together: frontmatter, a heading, and bullets.
+ */
+function isSettled(contents: string): boolean {
+  const end = contents.indexOf('\n---', 4)
+  const frontmatter = end === -1 ? '' : contents.slice(0, end)
+  if (/^unanswered:/m.test(frontmatter)) return true
+
+  const body = end === -1 ? contents : contents.slice(end + 4)
+  return body
+    .split('\n')
+    .some((line) => line.trim() !== '' && !line.startsWith('#') && !line.startsWith('-') && !line.startsWith('*'))
+}
+
 /** The guiding questions a scaffolded document of this kind asks. Exported so
  * that `unanswered-stub` can quote the questions a document is still ducking,
  * and `init` can hand them over as work, from this one definition — a second
@@ -603,9 +717,17 @@ export function guidingQuestionReportLines(result: ScaffoldResult): string[] {
 
   const lines = [
     '',
-    `${pending.length} document(s) ask guiding questions that are not answered yet. Answer each one,`,
-    'or set `unanswered: "<why not>"` in its frontmatter to record what is missing. `contrail deploy`',
-    'refuses until one of the two is true for every document.',
+    `${pending.length} document(s) ask guiding questions that are not answered yet. In order:`,
+    '',
+    '  1. Answer what the material you were given actually answers.',
+    '  2. ASK A PERSON the rest. Run `contrail questions` for them grouped into rounds, and put each',
+    '     round to whoever is in the conversation with you. They are the only source that can answer',
+    '     most of these.',
+    '  3. Only what they say they do not know earns `unanswered: "<what is missing, and that they',
+    '     were asked>"`, plus a row in 03-management/open-questions.md.',
+    '',
+    'Never invent a figure, a name or a date to fill a gap. `contrail deploy` refuses until every',
+    'document is answered or marked, and marking them all is how a docs tree becomes placeholder.',
     '',
   ]
   for (const file of pending) {

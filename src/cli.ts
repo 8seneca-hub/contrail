@@ -15,6 +15,7 @@ import type { DeployTransport } from './deploy/transport.js'
 import { buildSite, docsForAudience } from './emit/site.js'
 import { loadLock, saveLock } from './lock.js'
 import { parseDoc } from './parse.js'
+import { previewDrift, writePreviewManifest } from './preview.js'
 import { PlaneApiError, PlaneClient } from './plane/client.js'
 import { publishDocs, type PublishOptions, type PublishResult } from './plane/publish.js'
 import type { PlaneApi, PlaneProjectApi } from './plane/client.js'
@@ -22,6 +23,7 @@ import {
   CONFIG_TEMPLATE,
   deriveIdentifier,
   guidingQuestionReportLines,
+  interviewRounds,
   runInitTemplate,
   scaffoldDoc,
   type PlaneTarget,
@@ -331,7 +333,7 @@ export async function main(argv: string[]): Promise<number> {
       'contrail login [--plane-url <url>] [--workspace <slug>] [--no-browser] | logout | ' +
         'init [--template agency-project] [--no-plane] ' +
         '[--plane-url <url> --workspace <slug> [--project <name>] [--identifier <KEY>] [--project-id <uuid>]] | ' +
-        'build | status [--json] | ' +
+        'build | status [--json] | questions [--json] | preview [--out <dir>] [--audience client] | ' +
         'publish [--dry-run] [--force] [--only <substring>] [--audience client] | ' +
         'site [--out <dir>] [--audience client] | check [--strict] [--index] [--audience client] [--json] | ' +
         'scaffold <docKind> <path> [--json] | sheet pull <doc> | sheet push <doc> [--force] | ' +
@@ -470,6 +472,20 @@ export async function main(argv: string[]): Promise<number> {
           `Refusing to deploy: ${unanswered.length} document(s) leave their guiding questions ` +
             'unanswered. Answer them, set `unanswered: "<why not>"` on each one to record what is ' +
             'missing, or re-run with --force to publish them as they are.',
+        )
+        return 1
+      }
+
+      // A preview someone approved is a promise about what ships. If a document
+      // moved since, that promise no longer covers this build — in an agent loop
+      // the edit and the deploy can be one turn apart.
+      const drifted = previewDrift(config.root, siteOutDirFor(config, values.out), allDocs)
+      if (drifted.length > 0) {
+        for (const key of drifted) console.error(`CHANGED  ${key}`)
+        console.error(
+          `Refusing to deploy: ${drifted.length} document(s) changed since the preview was built, so ` +
+            'this build differs from the preview that was confirmed. Run `contrail preview` again and ' +
+            're-confirm, or re-run with --force to ship without a fresh confirmation.',
         )
         return 1
       }
@@ -651,6 +667,67 @@ export async function main(argv: string[]): Promise<number> {
       console.log(`${i + 1}. ${entry.docKind ?? '(no docKind)'}${stale}  ${entry.path}`)
       console.log(`   ${entry.title}${entry.note ? ` — ${entry.note}` : ''}`)
     })
+    return 0
+  }
+
+  if (command === 'preview') {
+    const siteUrl = siteUrlFor(config, audience)
+    const result = await buildSite({
+      docs: allDocs,
+      outDir: siteOutDirFor(config, values.out),
+      cacheDir: join(config.root, '.contrail', 'cache'),
+      archify: config.archify,
+      audience,
+      projectName: readProjectMeta(config.root)?.project,
+      siteUrl,
+    })
+    writeSiteLlmsTxt(config, allDocs, audience, result.outDir, siteUrl)
+    writePreviewManifest(result.outDir, docsForAudience(allDocs, audience))
+    const entry = join(result.outDir, 'index.html')
+    console.log(
+      `Built ${result.pages.length} page(s) for ${audience ?? 'internal'}, plus ${result.markdownFiles} markdown ` +
+        `file(s) for agents, to ${result.outDir}`,
+    )
+    console.log('')
+    console.log('Open this to confirm what a human will see in Plane:')
+    console.log(`  file://${entry}`)
+    console.log('')
+    console.log(
+      'This is the same HTML `contrail deploy` uploads. The matching `.md` of every page ships ' +
+        'alongside it for agents to read; a human following the Docs tab only ever reaches the HTML. ' +
+        'Deploy refuses if a document changes after this preview, so confirm and then deploy.',
+    )
+    return 0
+  }
+
+  if (command === 'questions') {
+    const rounds = interviewRounds(config.root)
+
+    if (values.json) {
+      console.log(JSON.stringify({ rounds }))
+      return 0
+    }
+
+    if (rounds.length === 0) {
+      console.log('No questions outstanding — the interview is complete. Run `contrail check`, then deploy.')
+      return 0
+    }
+
+    const documents = rounds.reduce((total, round) => total + round.documents.length, 0)
+    console.log(
+      `${documents} document(s) still need answers, grouped into ${rounds.length} round(s). ` +
+        'Ask a person these questions — they are the one source that can answer them. Ask a whole ' +
+        'round at a time, fill the documents from what they say, then run this again for the next ' +
+        'round. Only what they tell you they do not know earns an `unanswered` reason.',
+    )
+    for (const round of rounds) {
+      console.log('')
+      console.log(`Round ${round.number} of ${round.of} — ${round.theme}`)
+      for (const doc of round.documents) {
+        console.log(`  ${doc.key}`)
+        for (const question of doc.questions) console.log(`    - ${question}`)
+      }
+    }
     return 0
   }
 

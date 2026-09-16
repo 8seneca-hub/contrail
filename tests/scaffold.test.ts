@@ -254,6 +254,15 @@ describe('guidingQuestionReportLines', () => {
     expect(lines.join('\n')).toContain('unanswered:')
   })
 
+  it('puts asking a person AHEAD of marking unanswered, and forbids inventing an answer', () => {
+    const text = guidingQuestionReportLines({ created: ['docs/04-technical/prd.md'], skipped: [] }).join('\n')
+    expect(text).toMatch(/ASK A PERSON/)
+    expect(text).toMatch(/never invent/i)
+    // Ordering is the fix: offering "answer or mark" as equals is what got 23
+    // documents bulk-marked instead of asked about.
+    expect(text.indexOf('ASK A PERSON')).toBeLessThan(text.indexOf('unanswered:'))
+  })
+
   it('ignores the config and the folder READMEs — neither has questions to answer', () => {
     const lines = guidingQuestionReportLines({
       created: ['contrail.config.ts', 'docs/00-meta/project.yml', 'docs/01-overview/intake/README.md'],

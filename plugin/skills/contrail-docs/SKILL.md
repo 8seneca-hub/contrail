@@ -12,6 +12,32 @@ none, or all forty-four. Task types: `feature`, `estimate`, `scope`, `decision`,
 `TASK_DOC_KINDS`, mirrored in `docs/using-contrail.md`. No matching task? Pass keywords instead;
 `contrail context <keywords...>` searches title, summary and tags with no `--task` at all.
 
+## Starting a project: interview, do not guess
+
+`contrail init` scaffolds documents that are nothing but guiding questions. Those questions are the
+work, and the person in the conversation is the only source that can answer most of them.
+
+1. `contrail questions` — the outstanding questions, grouped into rounds a person can answer in one
+   sitting. Put each round to them in your own words. A whole round at a time, not one question at a
+   time and not all sixty-six at once.
+2. Write their answers into the documents that round named, then run `contrail questions` again.
+   Answered documents drop out, so the interview resumes instead of repeating.
+3. `unanswered: "<why not>"` is for what they told you they do not know — not for what you did not
+   ask. A reason that only says the brief was thin means nobody was asked.
+
+**Never invent a figure, a name or a date.** `contrail check` reports `unanswered-stub` on every
+document still asking its questions and `contrail deploy` refuses while any remain, but the gate
+cannot tell an answer from an invention. That part is on you.
+
+## Two artefacts per document
+
+Every page ships twice: `.html` for people, `.md` for agents. The HTML index links only `.html`;
+`llms.txt` links only `.md`. A person following the Plane Docs tab never reaches markdown.
+
+Before deploying, `contrail preview` builds the HTML and prints a `file://` link — give it to the
+person and wait for them to confirm. A deploy refuses if a document changes after that preview, so
+what was confirmed is what ships.
+
 ## Creating a document
 
 `contrail scaffold <docKind> <path>`. Never hand-write frontmatter — it is the one way to get the
