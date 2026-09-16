@@ -5,6 +5,14 @@ argument-hint: "<project name>"
 
 Run the full intake for `$ARGUMENTS`. Ask for the project name if none was given; never invent one.
 
+## 0. Can this machine render a diagram?
+
+`contrail doctor` first. If the **archify** check fails, stop and ask the user to run the install
+command it prints, then re-run doctor. Do not carry on and author diagrams anyway: Archify is only
+invoked by a document that already references one, so a project with none builds clean and reports
+`0 diagram(s)` as though nothing were wrong. The user finds out when they open the Docs tab and the
+diagrams they asked for are not there.
+
 ## 1. The repository
 
 The markdown is the source of truth and it lives in GitHub, so settle that before scaffolding.
