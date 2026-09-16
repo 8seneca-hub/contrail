@@ -64,6 +64,21 @@ export function parseDoc(absPath: string, root: string): Doc {
     }
   }
 
+  if (fm.nodiagram !== undefined) {
+    if (typeof fm.nodiagram !== 'string') {
+      throw new DocError(
+        `${key}: frontmatter \`nodiagram\` must be a string saying why this document has no ` +
+          'diagram.',
+      )
+    }
+    if (fm.nodiagram.trim() === '') {
+      throw new DocError(
+        `${key}: frontmatter \`nodiagram\` must be a non-empty reason — say what there is no ` +
+          'shape to draw.',
+      )
+    }
+  }
+
   // js-yaml (via gray-matter) auto-parses an unquoted YAML date
   // (`reviewedOn: 2026-09-01`) into a real Date object, not the ISO string
   // the schema promises. Normalize here, once, so every consumer of

@@ -61,9 +61,9 @@ HTML with themes and export.
 - Diagram type by what the text describes: `architecture` for components and connections, `sequence`
   for an ordered exchange, `workflow` for a branching process with handoffs, `dataflow` for data
   crossing a boundary, `lifecycle` for an entity moving through states.
-- At minimum give `04-technical/architecture.md` and `04-technical/prd.md` a diagram. `contrail check`
-  reports `undiagrammed-doc` and `flow-without-diagram` on anything else that needs one — clear those
-  before preview.
+- **Every document needs a diagram.** `contrail check` errors on any that has none, and a deploy
+  refuses. Where one genuinely has no shape — the glossary, the approvals log, open questions — set
+  `nodiagram: "<why there is nothing to draw>"` rather than drawing filler.
 - Archify not installed? `contrail` prints the exact install and `archify.bin` instructions.
 
 ## 5. Check, then confirm the HTML

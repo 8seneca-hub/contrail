@@ -15,6 +15,7 @@ section: 00-meta | 01-overview | 02-planning | 03-management | 04-technical | 05
 docKind: see taxonomy below
 owner: string           # optional; expected once status leaves 'draft'
 unanswered: string      # optional; why the guiding questions have no answer yet
+nodiagram: string       # optional; why this document has no diagram
 reviewedOn: "YYYY-MM-DD"  # optional; quote it — unquoted YAML parses as a Date, not a string
 ---
 ```

@@ -37,6 +37,14 @@ export interface Frontmatter {
    * an empty one is rejected at parse time.
    */
   unanswered?: string
+  /**
+   * Why this document carries no diagram. Set it and `undiagrammed-doc` stops
+   * firing. Some documents genuinely have no shape — a glossary is a list of
+   * terms — and a filler diagram on those is worse than none, because it
+   * teaches a reader that the diagrams here are decoration. The reason is the
+   * payload; an empty one is rejected at parse time.
+   */
+  nodiagram?: string
   /** ISO date; feeds a staleness rule later. */
   reviewedOn?: string
   /** Provenance — which client artefact this document's content came from. */

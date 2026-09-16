@@ -77,6 +77,11 @@ Write the IR as JSON beside the document, then reference it:
 - Set `meta.visual_preset` to `signal-flow` in the IR. Omit it and Archify falls back to `classic`,
   which is what "the diagram looks off" turns out to mean.
 - The IR lives in the repo next to the document; `contrail site` and `contrail deploy` render it.
+- **Every document needs one.** `undiagrammed-doc` is an error, not a warning, and a deploy refuses
+  while any document has neither a diagram nor a reason.
+- Where a document genuinely has no shape — a glossary is a list of terms, an approvals log a set of
+  dates — set `nodiagram: "<why>"`. A filler diagram is worse than none: it teaches a reader that the
+  diagrams here are decoration. Remove the marker when a diagram arrives, or `stale-nodiagram` fires.
 - `0 diagram(s)` in the build output means no document referenced one — a silent miss, not a success.
 - Not installed? Any render prints the install command and the `archify.bin` alternative. It ships as
   a skill, not an npm package, and installing the skill alone puts no `archify` on PATH.

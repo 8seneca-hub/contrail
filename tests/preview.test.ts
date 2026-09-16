@@ -122,3 +122,39 @@ describe('deploy against a confirmed preview', () => {
     expect(err).not.toMatch(/differs from the preview/i)
   })
 })
+
+describe('deploy refuses a document with no diagram', () => {
+  it('names the document and says how to record that there is nothing to draw', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'contrail-nodiagram-'))
+    mkdirSync(join(root, 'docs'), { recursive: true })
+    writeFileSync(
+      join(root, 'docs', 'architecture.md'),
+      '---\ntitle: Architecture\nsummary: The shape.\nstatus: current\ndocKind: architecture\n---\n\nThree services behind a gateway.\n',
+    )
+    writeFileSync(
+      join(root, 'contrail.config.ts'),
+      "export default { plane: { baseUrl: 'https://plane.test', workspace: 'acme' }, repos: {}, " +
+        "docs: ['./docs/**/*.md'], selfhost: { target: 'plane', projectId: 'p1' } }\n",
+    )
+    const { code, err } = await run(root, ['deploy', '--target', 'plane'])
+    expect(code).toBe(1)
+    expect(err).toContain('docs/architecture.md')
+    expect(err).toMatch(/nodiagram/)
+  })
+
+  it('proceeds once the reason is recorded', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'contrail-nodiagram-ok-'))
+    mkdirSync(join(root, 'docs'), { recursive: true })
+    writeFileSync(
+      join(root, 'docs', 'glossary.md'),
+      '---\ntitle: Glossary\nsummary: Terms.\nstatus: current\ndocKind: glossary\nnodiagram: "A term list has no shape."\n---\n\nTMS is the client system.\n',
+    )
+    writeFileSync(
+      join(root, 'contrail.config.ts'),
+      "export default { plane: { baseUrl: 'https://plane.test', workspace: 'acme' }, repos: {}, " +
+        "docs: ['./docs/**/*.md'], selfhost: { target: 'plane', projectId: 'p1' } }\n",
+    )
+    const { err } = await run(root, ['deploy', '--target', 'plane'])
+    expect(err).not.toMatch(/no diagram/i)
+  })
+})

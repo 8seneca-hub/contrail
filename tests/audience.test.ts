@@ -88,7 +88,10 @@ describe('llms.txt filters identically to the site', () => {
     )
     writeFileSync(
       join(root, 'docs', 'budget.md'),
-      `${FM('docKind: budget\naudience: internal\nkind: reference\n')}Internal cost breakdown.\n`,
+      // `nodiagram` because every document now needs a diagram or a recorded
+      // reason, and a one-line fixture has no shape to draw. This test is about
+      // audience filtering, not about the diagram rule.
+      `${FM('docKind: budget\naudience: internal\nkind: reference\nnodiagram: "Test fixture."\n')}Internal cost breakdown.\n`,
     )
 
     const { code } = await runInWorkspace(root, ['check', '--index', '--audience', 'client'])

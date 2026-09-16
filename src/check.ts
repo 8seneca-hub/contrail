@@ -213,18 +213,55 @@ function checkStepsWithoutDiagram(doc: Doc, children: RootContent[], findings: F
   }
 }
 
+/**
+ * A document with nothing to look at.
+ *
+ * Every document earns a diagram, not only the long ones: the previous rule
+ * fired above 400 words, which is how a whole tree of short documents shipped
+ * without a single diagram in it. A reader who has to reconstruct the shape of
+ * a system from prose is doing work the author should have done.
+ *
+ * `nodiagram` is the way out, and it takes a reason, because some documents
+ * genuinely have no shape — a glossary is a list of terms, an approvals log is
+ * a set of dates. A filler diagram on those is worse than none: it teaches a
+ * reader that the diagrams here are decoration.
+ *
+ * Exempt: a document with no `docKind` is a folder README, a pointer rather
+ * than a document. Stubs never reach this rule at all (see `checkDocs`) —
+ * `unanswered-stub` owns those, and a document with no content yet has no
+ * shape to draw either.
+ */
 function checkUndiagrammedDoc(doc: Doc, findings: Finding[]): void {
   if (containsDiagram(doc.tree.children)) return
-  const words = wordCount(doc.body)
-  if (words <= 400) return
+  if (doc.frontmatter.docKind === undefined) return
+  if (doc.frontmatter.nodiagram !== undefined) return
 
   findings.push({
     doc: doc.key,
     rule: 'undiagrammed-doc',
+    severity: 'error',
+    message:
+      `This document (${wordCount(doc.body)} words) has no diagram — describe its shape with an ` +
+      '`archify` block (architecture, workflow, sequence, dataflow, or lifecycle — pick the type ' +
+      'that fits), or set `nodiagram: "<why there is nothing to draw>"` in its frontmatter.',
+  })
+}
+
+/**
+ * The mirror of `undiagrammed-doc`: a document that gained a diagram but kept
+ * the excuse for not having one. Same reason `stale-unanswered` exists — a
+ * marker nobody removed makes the next reader distrust every other marker.
+ */
+function checkStaleNodiagram(doc: Doc, findings: Finding[]): void {
+  if (doc.frontmatter.nodiagram === undefined) return
+  if (!containsDiagram(doc.tree.children)) return
+  findings.push({
+    doc: doc.key,
+    rule: 'stale-nodiagram',
     severity: 'warn',
     message:
-      `This document is ${words} words with no diagram at all — describe its shape with an ` +
-      '`archify` block (architecture, workflow, sequence, dataflow, or lifecycle — pick the type that fits).',
+      'This document has a diagram but still carries `nodiagram` in its frontmatter — remove it, ' +
+      'or the next reader cannot tell which markers still mean anything.',
   })
 }
 
@@ -655,6 +692,7 @@ export function checkDocs(docs: Doc[], opts: { strict?: boolean; internalUrl?: s
       checkFlowWithoutDiagram(doc, children, findings)
       checkStepsWithoutDiagram(doc, children, findings)
       checkUndiagrammedDoc(doc, findings)
+      checkStaleNodiagram(doc, findings)
       checkMixedMode(doc, findings)
       checkProseHygiene(doc, findings)
     }

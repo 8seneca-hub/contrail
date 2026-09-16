@@ -465,13 +465,30 @@ export async function main(argv: string[]): Promise<number> {
     // link. Only `unanswered-stub` blocks — the rest of `check` stays advisory,
     // so this adds one refusal rather than making every warning fatal.
     if (!values.force) {
-      const unanswered = checkDocs(allDocs).filter((f) => f.rule === 'unanswered-stub')
+      const findings = checkDocs(allDocs)
+
+      const unanswered = findings.filter((f) => f.rule === 'unanswered-stub')
       if (unanswered.length > 0) {
         for (const finding of unanswered) console.error(formatFinding(finding))
         console.error(
           `Refusing to deploy: ${unanswered.length} document(s) leave their guiding questions ` +
             'unanswered. Answer them, set `unanswered: "<why not>"` on each one to record what is ' +
             'missing, or re-run with --force to publish them as they are.',
+        )
+        return 1
+      }
+
+      // A document nobody drew is a document a reader has to reconstruct from
+      // prose. Gated here for the same reason as the questions: a warning
+      // nobody has to clear is how the old 400-word rule hid an entire tree
+      // with no diagram in it.
+      const undiagrammed = findings.filter((f) => f.rule === 'undiagrammed-doc')
+      if (undiagrammed.length > 0) {
+        for (const finding of undiagrammed) console.error(formatFinding(finding))
+        console.error(
+          `Refusing to deploy: ${undiagrammed.length} document(s) have no diagram. Add an ` +
+            '`archify` block, set `nodiagram: "<why there is nothing to draw>"` where a document ' +
+            'genuinely has no shape, or re-run with --force.',
         )
         return 1
       }
