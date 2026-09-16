@@ -48,6 +48,8 @@ export interface PlaneProjectApi {
   /** Also the cheapest authenticated call there is, which is what `login` uses
    * to prove a pasted key works before saving it. */
   listProjects(): Promise<ProjectRecord[]>
+  /** Turn on an existing project's Docs tab. */
+  enableDocsView(projectId: string): Promise<ProjectRecord>
 }
 
 export interface PlaneApi {
@@ -113,6 +115,11 @@ export class PlaneClient implements PlaneApi, PlaneProjectApi {
   async listProjects(): Promise<ProjectRecord[]> {
     const { data } = await this.request('GET', '/projects/')
     return (data as { results?: ProjectRecord[] }).results ?? []
+  }
+
+  async enableDocsView(projectId: string): Promise<ProjectRecord> {
+    const { data } = await this.request('PATCH', `/projects/${projectId}/`, { docs_view: true })
+    return data as ProjectRecord
   }
 
   async createProject(input: CreateProjectInput): Promise<ProjectRecord> {

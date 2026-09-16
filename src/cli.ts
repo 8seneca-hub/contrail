@@ -261,7 +261,14 @@ export async function resolvePlaneTarget(
   }
 
   const normalisedBaseUrl = baseUrl.replace(/\/+$/, '')
+  const client = createClient({ baseUrl: normalisedBaseUrl, workspace, apiKey: requireApiKey() })
+
   if (request.projectId) {
+    // An existing project almost certainly has `docs_view` off - it defaults to
+    // false and no settings screen turns it on. Without this the deploy
+    // succeeds and the tab never appears, which looks like a broken publish
+    // rather than a disabled feature.
+    await client.enableDocsView(request.projectId)
     return { baseUrl: normalisedBaseUrl, workspace, projectId: request.projectId }
   }
 
@@ -270,7 +277,6 @@ export async function resolvePlaneTarget(
     throw new Error(`Cannot derive a Plane project identifier from '${request.name}'. Pass --identifier.`)
   }
 
-  const client = createClient({ baseUrl: normalisedBaseUrl, workspace, apiKey: requireApiKey() })
   try {
     const project = await client.createProject({ name: request.name, identifier })
     return { baseUrl: normalisedBaseUrl, workspace, projectId: project.id }

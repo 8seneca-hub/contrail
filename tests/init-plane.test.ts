@@ -9,13 +9,19 @@ import { saveConnection } from '../src/auth/credentials.js'
 
 function fakeProjectApi(overrides: Partial<PlaneProjectApi> = {}) {
   const created: CreateProjectInput[] = []
-  const api: PlaneProjectApi & { created: CreateProjectInput[] } = {
+  const docsEnabledFor: string[] = []
+  const api: PlaneProjectApi & { created: CreateProjectInput[]; docsEnabledFor: string[] } = {
     created,
+    docsEnabledFor,
     createProject: async (input) => {
       created.push(input)
       return { id: 'proj-1', name: input.name, identifier: input.identifier, docs_view: true }
     },
     listProjects: async () => [],
+    enableDocsView: async (projectId) => {
+      docsEnabledFor.push(projectId)
+      return { id: projectId, name: 'existing', identifier: 'EX', docs_view: true }
+    },
     ...overrides,
   }
   return api
@@ -78,6 +84,18 @@ describe('resolvePlaneTarget', () => {
 
     expect(target.projectId).toBe('existing-9')
     expect(api.created).toEqual([])
+  })
+
+  it('turns on the Docs tab of a project it attaches to', async () => {
+    // `docs_view` defaults to false and no settings screen turns it on, so
+    // without this the deploy succeeds into a project whose tab never appears.
+    const api = fakeProjectApi()
+    await resolvePlaneTarget(
+      { baseUrl: 'https://plane.test', workspace: 'acme', name: 'Demo', projectId: 'existing-9' },
+      () => api,
+    )
+
+    expect(api.docsEnabledFor).toEqual(['existing-9'])
   })
 
   it('requires the workspace alongside the url, rather than writing a config that looks wired', async () => {
