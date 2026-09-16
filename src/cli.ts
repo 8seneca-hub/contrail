@@ -1,4 +1,5 @@
-import { existsSync, writeFileSync } from 'node:fs'
+#!/usr/bin/env node
+import { existsSync, realpathSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import { globSync } from 'tinyglobby'
@@ -606,7 +607,13 @@ export async function main(argv: string[]): Promise<number> {
   return 2
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// `npm link` and a global install both put a *symlink* on PATH, so `argv[1]` is
+// that symlink while `import.meta.filename` is the file it resolves to. Comparing
+// them unresolved made the CLI a silent no-op when invoked by name - it exited 0
+// having run nothing. Interpolating into `file://` was wrong for a second reason:
+// a path containing a space or a non-ASCII character never matches the encoded
+// URL that `import.meta.url` carries.
+if (process.argv[1] && realpathSync(process.argv[1]) === import.meta.filename) {
   main(process.argv.slice(2))
     .then((code) => process.exit(code))
     .catch((error: unknown) => {
