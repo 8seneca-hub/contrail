@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { main } from '../src/cli.js'
+import { saveConnection } from '../src/auth/credentials.js'
 import { loadConfig } from '../src/config.js'
 import { parseDoc } from '../src/parse.js'
 import { runInitTemplate, scaffoldDoc } from '../src/scaffold.js'
@@ -154,7 +155,10 @@ describe('contrail init --template agency-project (via main)', () => {
     let code: number
     try {
       const spy = vi.spyOn(console, 'log').mockImplementation((msg: string) => logs.push(msg))
-      code = await main(['init', '--template', 'agency-project'])
+      // `--no-plane`: a scaffold-only init must not reach the network, and
+      // without this the result depends on whether whoever runs the suite has
+      // run `contrail login`.
+      code = await main(['init', '--template', 'agency-project', '--no-plane'])
       spy.mockRestore()
     } finally {
       process.chdir(cwd)
@@ -163,6 +167,28 @@ describe('contrail init --template agency-project (via main)', () => {
     expect(code).toBe(0)
     expect(existsSync(join(root, 'docs', '01-overview', 'charter.md'))).toBe(true)
     expect(logs.some((l) => l.includes('created'))).toBe(true)
+  })
+
+  it('--no-plane writes the placeholder config even when a login is saved', async () => {
+    const root = tmpRoot()
+    const cwd = process.cwd()
+    const originalConfigHome = process.env.XDG_CONFIG_HOME
+    process.env.XDG_CONFIG_HOME = tmpRoot()
+    saveConnection({ baseUrl: 'https://plane.test', workspace: 'acme', apiKey: 'saved-key' })
+    process.chdir(root)
+    try {
+      const spy = vi.spyOn(console, 'log').mockImplementation(() => {})
+      expect(await main(['init', '--template', 'agency-project', '--no-plane'])).toBe(0)
+      spy.mockRestore()
+    } finally {
+      process.chdir(cwd)
+      if (originalConfigHome === undefined) delete process.env.XDG_CONFIG_HOME
+      else process.env.XDG_CONFIG_HOME = originalConfigHome
+    }
+
+    const config = readFileSync(join(root, 'contrail.config.ts'), 'utf8')
+    expect(config).toContain('plane.example.com')
+    expect(config).not.toContain('selfhost')
   })
 
   it('rejects an unknown template name', async () => {

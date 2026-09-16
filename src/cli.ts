@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { existsSync, realpathSync, writeFileSync } from 'node:fs'
 import { basename, join, resolve } from 'node:path'
+import { clearConnection, credentialsPath, loadConnection } from './auth/credentials.js'
+import { openBrowser, promptLine, promptSecret, runLogin } from './auth/login.js'
 import { parseArgs } from 'node:util'
 import { globSync } from 'tinyglobby'
 import { checkDocs, checkExitCode, docStatusReport, writeLlmsTxt, writeSiteLlmsTxt } from './check.js'
@@ -219,10 +221,16 @@ async function readlineConfirm(message: string): Promise<boolean> {
   }
 }
 
+/** The Plane API key, from the environment or the saved connection.
+ *
+ * `PLANE_API_KEY` wins so CI can override a developer's saved login without
+ * touching their machine. Neither source is a config file: a key in
+ * `contrail.config.ts` would be committed.
+ */
 function requireApiKey(): string {
-  const key = process.env.PLANE_API_KEY
+  const key = process.env.PLANE_API_KEY ?? loadConnection()?.apiKey
   if (!key) {
-    throw new Error('PLANE_API_KEY is not set. Export it; it must never be stored in a config file.')
+    throw new Error('Not connected to Plane. Run `contrail login`, or export PLANE_API_KEY.')
   }
   return key
 }
@@ -299,6 +307,8 @@ export async function main(argv: string[]): Promise<number> {
       project: { type: 'string' },
       'start-date': { type: 'string' },
       'plane-url': { type: 'string' },
+      'no-browser': { type: 'boolean', default: false },
+      'no-plane': { type: 'boolean', default: false },
       workspace: { type: 'string' },
       identifier: { type: 'string' },
       'project-id': { type: 'string' },
@@ -311,7 +321,8 @@ export async function main(argv: string[]): Promise<number> {
 
   if (command === 'help') {
     console.log(
-      'contrail init [--template agency-project] ' +
+      'contrail login [--plane-url <url>] [--workspace <slug>] [--no-browser] | logout | ' +
+        'init [--template agency-project] [--no-plane] ' +
         '[--plane-url <url> --workspace <slug> [--project <name>] [--identifier <KEY>] [--project-id <uuid>]] | ' +
         'build | status [--json] | ' +
         'publish [--dry-run] [--force] [--only <substring>] [--audience client] | ' +
@@ -320,6 +331,38 @@ export async function main(argv: string[]): Promise<number> {
         'deploy [--audience client|internal] [--target vercel|plane|railway] [--prod] [--dry-run] [--yes] | ' +
         `context [--task <${TASK_TYPES.join('|')}>] [keywords...] [--audience client] [--json] [--limit <n>]`,
     )
+    return 0
+  }
+
+  if (command === 'login') {
+    try {
+      const path = await runLogin(
+        {
+          baseUrl: values['plane-url'],
+          workspace: values.workspace,
+          openBrowserFirst: values['no-browser'] !== true,
+        },
+        {
+          ask: promptLine,
+          askSecret: promptSecret,
+          open: openBrowser,
+          verify: async ({ baseUrl, workspace, apiKey }) => {
+            await new PlaneClient({ baseUrl, workspace, apiKey }).listProjects()
+          },
+          log: (line) => console.log(line),
+        },
+      )
+      console.log(`Connected. Saved to ${path}`)
+      return 0
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error))
+      return 1
+    }
+  }
+
+  if (command === 'logout') {
+    const path = credentialsPath()
+    console.log(clearConnection() ? `Removed ${path}` : `No saved connection at ${path}`)
     return 0
   }
 
@@ -333,12 +376,20 @@ export async function main(argv: string[]): Promise<number> {
       return 2
     }
     const projectName = values.project ?? basename(process.cwd())
+    // A saved login is what makes `contrail init --project "..."` enough on its
+    // own; the flags stay, for CI and for pointing at a second Plane. `--no-plane`
+    // scaffolds locally without creating anything remote, which is also what an
+    // offline machine needs.
+    const saved = values['no-plane'] ? undefined : loadConnection()
+    const baseUrl = values['no-plane'] ? undefined : (values['plane-url'] ?? saved?.baseUrl)
+    const workspace = values['no-plane'] ? undefined : (values.workspace ?? saved?.workspace)
+
     let plane: PlaneTarget | undefined
-    if (values['plane-url'] !== undefined || values.workspace !== undefined) {
+    if (baseUrl !== undefined || workspace !== undefined) {
       try {
         plane = await resolvePlaneTarget({
-          baseUrl: values['plane-url'],
-          workspace: values.workspace,
+          baseUrl,
+          workspace,
           projectId: values['project-id'],
           name: projectName,
           identifier: values.identifier,

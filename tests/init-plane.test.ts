@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { resolvePlaneTarget } from '../src/cli.js'
 import { PlaneApiError, type CreateProjectInput, type PlaneProjectApi } from '../src/plane/client.js'
 import { deriveIdentifier, renderConfig, runInitTemplate } from '../src/scaffold.js'
+import { saveConnection } from '../src/auth/credentials.js'
 
 function fakeProjectApi(overrides: Partial<PlaneProjectApi> = {}) {
   const created: CreateProjectInput[] = []
@@ -14,6 +15,7 @@ function fakeProjectApi(overrides: Partial<PlaneProjectApi> = {}) {
       created.push(input)
       return { id: 'proj-1', name: input.name, identifier: input.identifier, docs_view: true }
     },
+    listProjects: async () => [],
     ...overrides,
   }
   return api
@@ -32,13 +34,20 @@ describe('deriveIdentifier', () => {
 
 describe('resolvePlaneTarget', () => {
   const originalKey = process.env.PLANE_API_KEY
+  const originalConfigHome = process.env.XDG_CONFIG_HOME
 
   beforeEach(() => {
     process.env.PLANE_API_KEY = 'test-key'
+    // The key also falls back to a saved `contrail login`, so the config home
+    // is pointed at an empty directory. Without this the no-key test passes or
+    // fails depending on whether whoever runs it happens to be logged in.
+    process.env.XDG_CONFIG_HOME = mkdtempSync(join(tmpdir(), 'contrail-cfg-'))
   })
   afterEach(() => {
     if (originalKey === undefined) delete process.env.PLANE_API_KEY
     else process.env.PLANE_API_KEY = originalKey
+    if (originalConfigHome === undefined) delete process.env.XDG_CONFIG_HOME
+    else process.env.XDG_CONFIG_HOME = originalConfigHome
   })
 
   it('creates the project with the Docs tab already enabled', async () => {
@@ -83,11 +92,23 @@ describe('resolvePlaneTarget', () => {
     ).rejects.toThrow('Pass --identifier.')
   })
 
-  it('refuses without an API key, and never reads one from a config file', async () => {
+  it('refuses with no key and no saved login, and points at how to get one', async () => {
     delete process.env.PLANE_API_KEY
     await expect(
       resolvePlaneTarget({ baseUrl: 'https://plane.test', workspace: 'acme', name: 'Demo' }, () => fakeProjectApi()),
-    ).rejects.toThrow('PLANE_API_KEY is not set')
+    ).rejects.toThrow('Run `contrail login`')
+  })
+
+  it('falls back to a saved login when the environment has no key', async () => {
+    delete process.env.PLANE_API_KEY
+    saveConnection({ baseUrl: 'https://plane.test', workspace: 'acme', apiKey: 'saved-key' })
+
+    const target = await resolvePlaneTarget(
+      { baseUrl: 'https://plane.test', workspace: 'acme', name: 'Demo' },
+      () => fakeProjectApi(),
+    )
+
+    expect(target.projectId).toBe('proj-1')
   })
 
   it('turns a duplicate identifier into advice, not a raw 409', async () => {

@@ -45,6 +45,9 @@ export interface ProjectRecord {
  */
 export interface PlaneProjectApi {
   createProject(input: CreateProjectInput): Promise<ProjectRecord>
+  /** Also the cheapest authenticated call there is, which is what `login` uses
+   * to prove a pasted key works before saving it. */
+  listProjects(): Promise<ProjectRecord[]>
 }
 
 export interface PlaneApi {
@@ -105,6 +108,11 @@ export class PlaneClient implements PlaneApi, PlaneProjectApi {
       throw new PlaneApiError(`Plane ${method} ${path} failed with ${response.status}`, response.status, text)
     }
     return { status: response.status, data: text ? JSON.parse(text) : {} }
+  }
+
+  async listProjects(): Promise<ProjectRecord[]> {
+    const { data } = await this.request('GET', '/projects/')
+    return (data as { results?: ProjectRecord[] }).results ?? []
   }
 
   async createProject(input: CreateProjectInput): Promise<ProjectRecord> {
