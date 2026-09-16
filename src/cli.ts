@@ -698,8 +698,8 @@ export async function main(argv: string[]): Promise<number> {
     }
     console.log('')
     console.log(
-      `Documentation health: ${report.stubs.length} stub(s), ${report.noOwner.length} with no owner, ` +
-        `${report.overdue.length} overdue for review.`,
+      `Documentation health: ${report.stubs.length} stub(s), ${report.unanswered.length} unanswered, ` +
+        `${report.noOwner.length} with no owner, ${report.overdue.length} overdue for review.`,
     )
     for (const f of report.missingCoreDocs) console.log(`  MISSING  ${f.message}`)
     return 0

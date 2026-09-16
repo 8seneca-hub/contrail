@@ -288,6 +288,23 @@ describe('what an MCP client sees on stdout', () => {
     expect(output).toContain('unanswered:')
   })
 
+  it('`status` counts the unanswered documents in its health summary, not just per line', async () => {
+    const root = tmpRoot()
+    const cwd = process.cwd()
+    const logs: string[] = []
+    process.chdir(root)
+    const spy = vi.spyOn(console, 'log').mockImplementation((msg: string) => logs.push(msg))
+    try {
+      await main(['init', '--template', 'agency-project', '--no-plane', '--project', 'Demo'])
+      logs.length = 0
+      await main(['status'])
+    } finally {
+      process.chdir(cwd)
+      spy.mockRestore()
+    }
+    expect(logs.join('\n')).toMatch(/Documentation health:.*23 unanswered/)
+  })
+
   it('`status` flags each unanswered document by name', async () => {
     const root = tmpRoot()
     const cwd = process.cwd()
