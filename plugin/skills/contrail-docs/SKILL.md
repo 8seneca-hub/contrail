@@ -29,10 +29,15 @@ work, and the person in the conversation is the only source that can answer most
 document still asking its questions and `contrail deploy` refuses while any remain, but the gate
 cannot tell an answer from an invention. That part is on you.
 
-## Two artefacts per document
+## Two artefacts per document, two indexes
 
 Every page ships twice: `.html` for people, `.md` for agents. The HTML index links only `.html`;
 `llms.txt` links only `.md`. A person following the Plane Docs tab never reaches markdown.
+
+There are likewise two `llms.txt`. `docs/llms.txt` lives in the repo with relative `.md` links, for
+an agent reading the checkout — regenerate it with `contrail check --index` and commit it alongside
+the documents. `site/llms.txt` is built with absolute `.html` URLs, for an agent fetching the
+deployed site.
 
 Before deploying, `contrail preview` builds the HTML and prints a `file://` link — give it to the
 person and wait for them to confirm. A deploy refuses if a document changes after that preview, so
@@ -54,6 +59,27 @@ schema, section, and derived title right.
 | `release` | version + date | `<version> — <D Month YYYY>` | v1.2.0 — 20 September 2026 |
 
 Every other `docKind` is a singleton — its kind name alone is title enough.
+
+## Diagrams: Archify, never mermaid
+
+A reader should see the shape of the system, not only read about it. Mermaid flattens to a PNG;
+Archify renders explorable HTML with themes, views and export, and it is what `contrail check`
+asks for.
+
+Write the IR as JSON beside the document, then reference it:
+
+````markdown
+```archify {type=architecture, src=./diagrams/system.architecture.json, summary="How a render request reaches storage."}
+```
+````
+
+- `summary` is mandatory — a missing one is a build error, not a warning.
+- Set `meta.visual_preset` to `signal-flow` in the IR. Omit it and Archify falls back to `classic`,
+  which is what "the diagram looks off" turns out to mean.
+- The IR lives in the repo next to the document; `contrail site` and `contrail deploy` render it.
+- `0 diagram(s)` in the build output means no document referenced one — a silent miss, not a success.
+- Not installed? Any render prints the install command and the `archify.bin` alternative. It ships as
+  a skill, not an npm package, and installing the skill alone puts no `archify` on PATH.
 
 ## Diagram type
 

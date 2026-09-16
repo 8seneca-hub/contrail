@@ -56,9 +56,13 @@ function isEnoent(error: unknown): error is NodeJS.ErrnoException {
  */
 function enoentMessage(bin: string): string {
   return (
-    `Archify was not found (tried to run \`${bin}\`). Install it with:\n` +
-    '  npx skills add tt-a1i/archify -g\n' +
-    'Or point `archify.bin` in contrail.config.ts at an existing checkout.'
+    `Archify was not found (tried to run \`${bin}\`). It ships as a skill, not an npm package:\n` +
+    '  npx skills add tt-a1i/archify\n' +
+    'That installs to ~/.agents/skills/archify, which puts no `archify` on PATH. Then either\n' +
+    'symlink its CLI:\n' +
+    '  ln -s ~/.agents/skills/archify/bin/archify.mjs /usr/local/bin/archify\n' +
+    'or point `archify.bin` in contrail.config.ts at that same bin/archify.mjs.\n' +
+    'Do not pass `-g` to the installer: it refuses a global skill install.'
   )
 }
 
