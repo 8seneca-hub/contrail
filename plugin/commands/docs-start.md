@@ -17,7 +17,11 @@ diagrams they asked for are not there.
 
 The markdown is the source of truth and it lives in GitHub, so settle that before scaffolding.
 
-Ask: **"Which GitHub repo is this project's? Paste the URL, or say `create`."**
+Ask: **"Which GitHub repo should these documents live in? Paste the URL, or say `create`."**
+
+Never fall back to the current working directory. That is a coincidence of where the session
+started, not a decision — and it is how a project's documentation ends up committed to an unrelated
+repository.
 
 - **A URL:** clone it. Scaffold into the clone, so `docs/` sits in the repo from the first commit.
 - **Already have it locally?** Run `git rev-parse --show-toplevel` in the directory you intend to
@@ -27,8 +31,11 @@ Ask: **"Which GitHub repo is this project's? Paste the URL, or say `create`."**
 - **Check who owns it.** These documents default to `audience: internal` and routinely carry
   budgets, estimates and margins. A client-owned repository is the wrong home for them, however
   natural it looks to put the docs next to the code.
-- **`create`:** confirm the owner and name, create the repo, then clone it. Creating a repo is not
-  undoable — say the full `owner/name` and wait for a yes.
+- **`create`, or they cannot name one:** create it rather than scaffolding here. Say the full
+  `owner/name` and wait for a yes — creating a repository is not undoable. Default the owner to your
+  own organisation, not the client's, for the same audience reason. Initialise it with a README
+  naming the project and saying the repo holds its contrail documentation, then clone, scaffold into
+  the clone, and push.
 - Repo already has a `docs/` folder: do not overwrite it. `contrail init` skips what exists, but say
   what it skipped.
 
