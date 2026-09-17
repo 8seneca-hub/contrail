@@ -12,6 +12,16 @@ none, or all forty-four. Task types: `feature`, `estimate`, `scope`, `decision`,
 `TASK_DOC_KINDS`, mirrored in `docs/using-contrail.md`. No matching task? Pass keywords instead;
 `contrail context <keywords...>` searches title, summary and tags with no `--task` at all.
 
+## Intake before interview
+
+Ask what already exists before asking a person to recall anything: a brief or RFQ, a Drive folder,
+spreadsheets, an OpenAPI spec, past proposals, meeting notes, a repo or wiki. Land each item
+**verbatim** in `docs/01-overview/intake/` — that folder is for raw client material, it keeps its own
+words, and the real documents cite the intake file they were synthesised from.
+
+A spreadsheet is the exception to "copy it in": use a `sheet` block so the document carries live
+values, a link back to the source and a cached snapshot, rather than numbers that quietly go stale.
+
 ## Starting a project: interview, do not guess
 
 `contrail init` scaffolds documents that are nothing but guiding questions. Those questions are the
