@@ -5,7 +5,9 @@ import { visit } from 'unist-util-visit'
 import type { Code, Parent, Root, RootContent, Table, TableCell, TableRow } from 'mdast'
 import { parseArchifyMeta } from '../blocks/archify.js'
 import { parseArtifactMeta } from '../blocks/artifact.js'
+import { parseFileMeta } from '../blocks/file.js'
 import { parseSheetMeta } from '../blocks/sheet.js'
+import { humanSize, rawFileHref, type RawFile } from '../raw-files.js'
 import { getSnapshot } from '../sheets/snapshot.js'
 import type { Doc } from '../types.js'
 
@@ -35,7 +37,15 @@ function sheetTableNode(rows: string[][]): Table {
   }
 }
 
-export function emitMarkdown(doc: Doc): string {
+/**
+ * The agent-readable counterpart of a page.
+ *
+ * `rawFiles`/`rootPrefix` exist so a `file` block survives into this copy as a
+ * working link. Without them the markdown would carry the summary and silently
+ * drop the attachment, which is worse than either — an agent reading the `.md`
+ * would have no idea a signed estimate was ever published.
+ */
+export function emitMarkdown(doc: Doc, rawFiles: Record<string, RawFile> = {}, rootPrefix = ''): string {
   const tree = structuredClone(doc.tree) as Root
 
   visit(tree, 'code', (node: Code, index: number | undefined, parent: Parent | undefined) => {
@@ -68,6 +78,26 @@ export function emitMarkdown(doc: Doc): string {
         },
       ]
       parent.children.splice(index, 1, ...replacement)
+      return
+    }
+
+    if (node.lang === 'file') {
+      const meta = parseFileMeta(node.meta, where)
+      const file = rawFiles[meta.src]
+      if (!file) {
+        throw new Error(
+          `${where}: no raw file collected for ${meta.src}. Add a \`files\` glob in ` +
+            'contrail.config.ts that matches it.',
+        )
+      }
+      const name = file.sourceRel.split('/').pop() ?? file.sourceRel
+      parent.children.splice(index, 1, {
+        type: 'paragraph',
+        children: [
+          { type: 'link', url: rawFileHref(file, rootPrefix), children: [{ type: 'text', value: name }] },
+          { type: 'text', value: ` — ${humanSize(file.size)}. ${meta.summary}` },
+        ],
+      })
       return
     }
 

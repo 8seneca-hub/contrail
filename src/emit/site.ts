@@ -20,6 +20,7 @@ import { assetIdForDiagram, assetIdForFile, collectAssets, collectDiagrams } fro
 import { matchAlert, stripAlertMarker, type AlertKind } from '../blocks/alert.js'
 import { parseArchifyMeta } from '../blocks/archify.js'
 import { parseArtifactMeta } from '../blocks/artifact.js'
+import { parseFileMeta } from '../blocks/file.js'
 import { parseSheetMeta, type SheetMeta } from '../blocks/sheet.js'
 import { readProjectMeta } from '../config.js'
 import { SECTIONS, type Section } from '../doc-kinds.js'
@@ -27,9 +28,20 @@ import type { ArchifyOptions } from '../render/archify.js'
 import type { Mmdc } from '../render/mermaid.js'
 import { getSnapshot, sheetUrlFor, type SheetSnapshot } from '../sheets/snapshot.js'
 import type { Audience, Doc } from '../types.js'
+import { humanSize, rawFileHref, type RawFile } from '../raw-files.js'
 import { emitMarkdown } from './md.js'
 
 const SITE_CSS_PATH = fileURLToPath(new URL('../../templates/site.css', import.meta.url))
+
+/** Inter, resolved from contrail's own dependency rather than the host page's:
+ * the build has to carry the font because the Docs tab serves `default-src
+ * 'self'`, which blocks a CDN. Two subsets — latin, and latin-ext for the
+ * Central European diacritics client documents are routinely written in. */
+const FONT_FILES = ['inter-latin-wght-normal.woff2', 'inter-latin-ext-wght-normal.woff2']
+
+function fontSourcePath(file: string): string {
+  return fileURLToPath(new URL(`../../${'node'}_modules/@fontsource-variable/inter/files/${file}`, import.meta.url))
+}
 
 export interface SiteEmitContext {
   /** `DiagramPlan.irPath` (absolute) -> path relative to the site root, e.g. "diagrams/<hash>.html". */
@@ -48,6 +60,9 @@ export interface SiteEmitContext {
   diagramHtml: Record<string, string>
   /** `AssetPlan.id` -> path relative to the site root, e.g. "assets/<hash>.png". */
   assetPaths: Record<string, string>
+  /** Raw client material collected by the `files` globs, keyed by the path a
+   * `file` block names (relative to the project root). */
+  rawFiles: Record<string, RawFile>
   /**
    * Every known document's absolute path -> its emitted page file (root-
    * relative, e.g. `"04-technical/prd.html"`) and whether it is being
@@ -176,6 +191,17 @@ function figureForDiagram(path: string, summary: string, html: string): string {
   )
 }
 
+function figureForRawFile(file: RawFile, summary: string, rootPrefix: string): string {
+  const name = file.sourceRel.split('/').pop() ?? file.sourceRel
+  return (
+    '<figure class="file">' +
+    `<a class="file-link" href="${escapeHtml(rawFileHref(file, rootPrefix))}" download>` +
+    `${escapeHtml(name)}<span class="file-size">${escapeHtml(humanSize(file.size))}</span></a>` +
+    `<figcaption>${escapeHtml(summary)}</figcaption>` +
+    '</figure>'
+  )
+}
+
 function figureForAsset(path: string, summary: string): string {
   const safeSummary = escapeHtml(summary)
   return (
@@ -246,6 +272,17 @@ function transformCodeBlocks(doc: Doc, tree: Root, ctx: SiteEmitContext, rootPre
       const path = ctx.diagramPaths[irPath]
       if (!path) throw new Error(`${where}: no rendered diagram found for ${meta.src}`)
       markup = figureForDiagram(rootPrefix + path, meta.summary, ctx.diagramHtml[irPath] ?? '')
+    } else if (node.lang === 'file') {
+      const meta = parseFileMeta(node.meta, where)
+      const file = ctx.rawFiles[meta.src]
+      if (!file) {
+        throw new Error(
+          `${where}: no raw file collected for ${meta.src}. Add a \`files\` glob in ` +
+            'contrail.config.ts that matches it — raw material lives outside `docs/`, which is ' +
+            'markdown-only.',
+        )
+      }
+      markup = figureForRawFile(file, meta.summary, rootPrefix)
     } else if (node.lang === 'mermaid') {
       const id = assetIdForDiagram(node.value)
       const path = ctx.assetPaths[id]
@@ -960,6 +997,10 @@ export async function buildSite(args: {
   /** This build's own deployed address (Task 3) — `site.internalUrl` for an internal build,
    * `site.clientUrl` for a client one. `undefined` keeps every page's links relative. */
   siteUrl?: string
+  /** Raw client material collected from the `files` globs. Copied into the
+   * build so it ships to object storage with the site, and referenced by any
+   * `file` block that names it. */
+  rawFiles?: RawFile[]
 }): Promise<SiteResult> {
   const { docs, outDir, cacheDir, mmdc, archify, audience, projectName, siteUrl } = args
   const emitted = docsForAudience(docs, audience).filter((doc) => !isDirectoryReadme(doc))
@@ -976,6 +1017,25 @@ export async function buildSite(args: {
   mkdirSync(join(outDir, 'diagrams'), { recursive: true })
   mkdirSync(join(outDir, 'assets'), { recursive: true })
   copyFileSync(SITE_CSS_PATH, join(outDir, 'site.css'))
+
+  mkdirSync(join(outDir, 'fonts'), { recursive: true })
+  for (const file of FONT_FILES) {
+    const source = fontSourcePath(file)
+    // A missing font must not fail a build — the CSS falls back to system-ui,
+    // which is close enough that nobody is blocked from publishing over it.
+    if (existsSync(source)) copyFileSync(source, join(outDir, 'fonts', file))
+  }
+
+  const rawFiles: Record<string, RawFile> = {}
+  for (const file of args.rawFiles ?? []) {
+    rawFiles[file.sourceRel] = file
+  }
+  if (Object.keys(rawFiles).length > 0) {
+    mkdirSync(join(outDir, 'files'), { recursive: true })
+    for (const file of Object.values(rawFiles)) {
+      copyFileSync(file.absPath, join(outDir, file.outPath))
+    }
+  }
 
   const diagramPaths: Record<string, string> = {}
   const diagramHtml: Record<string, string> = {}
@@ -1014,6 +1074,7 @@ export async function buildSite(args: {
     diagramPaths,
     diagramHtml,
     assetPaths,
+    rawFiles,
     docs: docPages,
     filtered: audience !== undefined,
     defangedLinks,
@@ -1045,7 +1106,10 @@ export async function buildSite(args: {
     // only ever distinguishes `'client'` from everything else, so that case is not this comment's
     // concern.) Do not lift this gate without first teaching `emitMarkdown` to defang links.
     if (audience !== 'client') {
-      writeFileSync(join(outDir, pageFile.replace(/\.html$/, '.md')), emitMarkdown(doc))
+      writeFileSync(
+        join(outDir, pageFile.replace(/\.html$/, '.md')),
+        emitMarkdown(doc, rawFiles, rootPrefixFor(pageFile)),
+      )
       markdownFiles++
     }
   }

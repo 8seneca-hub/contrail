@@ -15,6 +15,7 @@ import type { DeployTransport } from './deploy/transport.js'
 import { buildSite, docsForAudience } from './emit/site.js'
 import { loadLock, saveLock } from './lock.js'
 import { parseDoc } from './parse.js'
+import { collectRawFiles } from './raw-files.js'
 import { previewDrift, writePreviewManifest } from './preview.js'
 import { PlaneApiError, PlaneClient } from './plane/client.js'
 import { publishDocs, type PublishOptions, type PublishResult } from './plane/publish.js'
@@ -582,6 +583,7 @@ export async function main(argv: string[]): Promise<number> {
       audience,
       projectName: readProjectMeta(config.root)?.project,
       siteUrl,
+      rawFiles: collectRawFiles(config.root, config.files),
     })
 
     // Ruling 2: the same --audience filter that governed the pages governs this llms.txt too — see
@@ -697,6 +699,7 @@ export async function main(argv: string[]): Promise<number> {
       audience,
       projectName: readProjectMeta(config.root)?.project,
       siteUrl,
+      rawFiles: collectRawFiles(config.root, config.files),
     })
     writeSiteLlmsTxt(config, allDocs, audience, result.outDir, siteUrl)
     writePreviewManifest(result.outDir, docsForAudience(allDocs, audience))

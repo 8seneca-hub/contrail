@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process'
 import { join } from 'node:path'
 import { writeSiteLlmsTxt } from './check.js'
 import { buildSite, docsForAudience } from './emit/site.js'
+import { collectRawFiles } from './raw-files.js'
 import type { DeployTransport } from './deploy/transport.js'
 import type { Audience, Config, Doc } from './types.js'
 
@@ -281,6 +282,7 @@ export async function deploy(options: DeployOptions): Promise<DeployResult> {
     outDir,
     cacheDir: join(options.config.root, '.contrail', 'cache'),
     audience: siteAudienceFor(audience),
+    rawFiles: collectRawFiles(options.config.root, options.config.files),
   })
   // `llms.txt` is the only thing an agent has to discover what documents exist
   // (docs/plane-docs-api-spec.md) — every build path writes it, not just `contrail site`, using the
@@ -339,6 +341,7 @@ async function deploySelfhost(
     outDir,
     cacheDir: join(options.config.root, '.contrail', 'cache'),
     audience: siteAudienceFor(audience),
+    rawFiles: collectRawFiles(options.config.root, options.config.files),
   })
   // Same as the vercel path above: every build path writes its own llms.txt, relative-only since
   // this build bakes in no absolute site address either.

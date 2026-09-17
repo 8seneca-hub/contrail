@@ -81,6 +81,13 @@ export interface Config {
   repos: Record<string, string>
   docs: string[]
   /**
+   * Globs naming raw client material — spreadsheets, PDFs, signed proposals —
+   * that ships with the build so documents can link to it. Deliberately
+   * separate from `docs`: a document is parsed, linted and rendered, and a
+   * binary is none of those. Absent means a project carries no attachments.
+   */
+  files?: string[]
+  /**
    * `internalUrl`/`clientUrl` are the deployed addresses of the two Vercel
    * projects (see the M3 plan). Either or both may be absent — most trees
    * won't have deployed yet — in which case the site keeps working with
