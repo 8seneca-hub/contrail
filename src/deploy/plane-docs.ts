@@ -41,6 +41,52 @@ const CONTENT_TYPES: Record<string, string> = {
   '.woff2': 'font/woff2',
   '.md': 'text/markdown',
   '.txt': 'text/plain',
+  // Raw client material. These are the correct MIME types, but the server's
+  // manifest validation (spec §5) does NOT yet allow them — see
+  // `SERVER_ALLOWED_TYPES` below. Listed so the pre-flight check can name a
+  // file precisely, and so widening the server is the only change needed.
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.xls': 'application/vnd.ms-excel',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.doc': 'application/msword',
+  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  '.pdf': 'application/pdf',
+  '.csv': 'text/csv',
+}
+
+/**
+ * What the docs endpoint's manifest validation accepts today (spec §5).
+ *
+ * Kept as its own list rather than inferred from `CONTENT_TYPES`, because the
+ * two legitimately differ: contrail knows the right MIME type for a spreadsheet
+ * long before the server agrees to store one. When the server's whitelist is
+ * widened, widen this to match — and until then `unservableFiles` refuses the
+ * deploy by name instead of letting one entry 400 the whole manifest.
+ */
+const SERVER_ALLOWED_TYPES = new Set([
+  'text/html',
+  'text/css',
+  'text/plain',
+  'text/markdown',
+  'application/javascript',
+  'application/json',
+])
+
+function serverWillServe(type: string): boolean {
+  return SERVER_ALLOWED_TYPES.has(type) || type.startsWith('image/') || type.startsWith('font/')
+}
+
+/**
+ * Files in the build whose content type the server's manifest validation will
+ * reject. Named up front because the failure is all-or-nothing: one disallowed
+ * entry 400s the entire manifest, so a single attachment takes the whole
+ * publish with it and the error says nothing about which file caused it.
+ */
+export function unservableFiles(dir: string): string[] {
+  return collectDocsFiles(dir)
+    .filter((file) => !serverWillServe(contentTypeFor(file.path)))
+    .map((file) => file.path)
+    .sort()
 }
 
 function contentTypeFor(path: string): string {
@@ -229,6 +275,16 @@ export function createPlaneDocsTransport(opts: PlaneDocsTransportOptions): Deplo
     name: 'plane',
     async push(localDir, remotePath, pushOpts) {
       assertLlmsTxtMatchesOrigin(localDir, baseUrl)
+
+      const unservable = unservableFiles(localDir)
+      if (unservable.length > 0) {
+        throw new DeployError(
+          `${unservable.length} file(s) have a content type the docs endpoint does not accept, and ` +
+            'one rejected entry fails the whole manifest rather than just itself. Allow these types ' +
+            "in the server's manifest validation (spec §5) and widen `SERVER_ALLOWED_TYPES` in " +
+            `src/deploy/plane-docs.ts to match. Affected: ${unservable.join(', ')}`,
+        )
+      }
 
       const unframeable = unframeablePages(localDir)
       if (unframeable.length > 0) {

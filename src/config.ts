@@ -43,6 +43,18 @@ export function loadConfig(configPath: string): Config {
     }
   }
 
+  if (raw.files !== undefined) {
+    if (!Array.isArray(raw.files)) {
+      throw new ConfigError(`${configPath}: \`files\` must be an array of globs naming raw material.`)
+    }
+    for (let i = 0; i < raw.files.length; i++) {
+      const glob = raw.files[i]
+      if (typeof glob !== 'string' || glob.length === 0) {
+        throw new ConfigError(`${configPath}: \`files[${i}]\` must be a non-empty string.`)
+      }
+    }
+  }
+
   // Validate repos values are strings
   const repos = raw.repos ?? {}
   for (const [key, value] of Object.entries(repos)) {
@@ -134,6 +146,7 @@ export function loadConfig(configPath: string): Config {
     },
     repos,
     docs: raw.docs,
+    files: raw.files,
     site,
     vercel: raw.vercel,
     archify: raw.archify,
