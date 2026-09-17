@@ -31,9 +31,30 @@ Ask: **"Which GitHub repo is this project's? Paste the URL, or say `create`."**
 project, enables its Docs tab, and writes 32 files. The output lists every document and the questions
 it owes.
 
-## 3. The brief, then the interview
+## 3. What already exists
 
-Ask for the brief first — whatever they already have. Answer what it genuinely covers.
+Most projects are not starting from nothing, and material the client already wrote answers questions
+faster and more accurately than asking someone to recall them. Ask once, listing the kinds:
+
+> Is there a brief or RFQ, a Drive or SharePoint folder, spreadsheets (estimates, pricing, backlogs),
+> an OpenAPI/Swagger spec, past proposals, meeting notes, an existing repo or wiki?
+
+Read whatever they point you at and land each item **verbatim** in `docs/01-overview/intake/`. That
+folder exists for exactly this, and a raw client artefact must keep its own words — synthesis happens
+in the real documents, which cite the intake file they came from.
+
+Two kinds need more than a copy:
+
+- **Google Sheets** — do not paste the numbers. Use a `sheet` block, so the document shows live values
+  with a link back and a cached snapshot: ```` ```sheet {id=<spreadsheet id>, range="Estimate!A1:E40",
+  summary="..."} ```` Needs a Google service account (`sheets.credentialsPath`, or
+  `GOOGLE_APPLICATION_CREDENTIALS`).
+- **OpenAPI/Swagger** — the spec belongs beside `04-technical/api-reference.md`, and that document
+  summarises what the API does rather than restating every endpoint.
+
+## 4. The brief, then the interview
+
+Answer what the intake material genuinely covers before asking anyone anything.
 
 Then `contrail questions`. Put each round to them **in the conversation, in your own words, a whole
 round at a time**. They are the only source that can answer most of these. After each round, write
@@ -44,7 +65,7 @@ out, so the interview resumes rather than repeats.
 that they were asked. Add a matching row to `03-management/open-questions.md`. **Never invent a
 figure, a name or a date.**
 
-## 4. Diagrams
+## 5. Diagrams
 
 A person reading this should be able to see the shape of the thing, not just read about it. Author
 diagrams with **Archify**, never mermaid — mermaid flattens to a PNG, Archify produces explorable
@@ -66,7 +87,7 @@ HTML with themes and export.
   `nodiagram: "<why there is nothing to draw>"` rather than drawing filler.
 - Archify not installed? `contrail` prints the exact install and `archify.bin` instructions.
 
-## 5. Check, then confirm the HTML
+## 6. Check, then confirm the HTML
 
 `contrail check` — clear the errors, and the diagram warnings above. This also regenerates
 `docs/llms.txt`, the index that tells an agent which document to read; commit it with the docs.
@@ -75,7 +96,7 @@ HTML with themes and export.
 byte-for-byte the HTML the Plane Docs tab serves, so it is the last point at which a human sees what
 a human will see.
 
-## 6. Publish and commit
+## 7. Publish and commit
 
 `contrail deploy --target plane`. Every page ships twice: `.html` for people, `.md` for agents. A
 deploy refuses if a document changed after the preview they confirmed — re-preview and re-confirm.
