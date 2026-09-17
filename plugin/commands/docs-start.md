@@ -20,6 +20,13 @@ The markdown is the source of truth and it lives in GitHub, so settle that befor
 Ask: **"Which GitHub repo is this project's? Paste the URL, or say `create`."**
 
 - **A URL:** clone it. Scaffold into the clone, so `docs/` sits in the repo from the first commit.
+- **Already have it locally?** Run `git rev-parse --show-toplevel` in the directory you intend to
+  use and say which repository it names. A folder inside a monorepo of many projects is almost never
+  the project's own repo, and `directory` is taken literally — scaffolding into the wrong one commits
+  a project's documentation somewhere nobody will look for it.
+- **Check who owns it.** These documents default to `audience: internal` and routinely carry
+  budgets, estimates and margins. A client-owned repository is the wrong home for them, however
+  natural it looks to put the docs next to the code.
 - **`create`:** confirm the owner and name, create the repo, then clone it. Creating a repo is not
   undoable — say the full `owner/name` and wait for a yes.
 - Repo already has a `docs/` folder: do not overwrite it. `contrail init` skips what exists, but say
