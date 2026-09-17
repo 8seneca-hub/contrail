@@ -24,6 +24,34 @@ export interface AssetUpload {
   upload_data: { url: string; fields: Record<string, string> }
 }
 
+export interface CreateProjectInput {
+  name: string
+  /** Plane's short project key, uppercase, unique per workspace, max 12 chars. */
+  identifier: string
+}
+
+export interface ProjectRecord {
+  id: string
+  name: string
+  identifier: string
+  docs_view: boolean
+}
+
+/** Project creation, kept apart from `PlaneApi`.
+ *
+ * `PlaneApi` is the page-publishing surface; only `init` creates projects, and
+ * folding the two together would make every page-publishing caller and test
+ * double carry a method it never calls.
+ */
+export interface PlaneProjectApi {
+  createProject(input: CreateProjectInput): Promise<ProjectRecord>
+  /** Also the cheapest authenticated call there is, which is what `login` uses
+   * to prove a pasted key works before saving it. */
+  listProjects(): Promise<ProjectRecord[]>
+  /** Turn on an existing project's Docs tab. */
+  enableDocsView(projectId: string): Promise<ProjectRecord>
+}
+
 export interface PlaneApi {
   createPage(input: CreatePageInput): Promise<CreatePageResult>
   getPage(pageId: string): Promise<PageRecord>
@@ -50,7 +78,7 @@ export class PlaneApiError extends Error {
   }
 }
 
-export class PlaneClient implements PlaneApi {
+export class PlaneClient implements PlaneApi, PlaneProjectApi {
   private readonly baseUrl: string
   private readonly workspace: string
   private readonly apiKey: string
@@ -82,6 +110,25 @@ export class PlaneClient implements PlaneApi {
       throw new PlaneApiError(`Plane ${method} ${path} failed with ${response.status}`, response.status, text)
     }
     return { status: response.status, data: text ? JSON.parse(text) : {} }
+  }
+
+  async listProjects(): Promise<ProjectRecord[]> {
+    const { data } = await this.request('GET', '/projects/')
+    return (data as { results?: ProjectRecord[] }).results ?? []
+  }
+
+  async enableDocsView(projectId: string): Promise<ProjectRecord> {
+    const { data } = await this.request('PATCH', `/projects/${projectId}/`, { docs_view: true })
+    return data as ProjectRecord
+  }
+
+  async createProject(input: CreateProjectInput): Promise<ProjectRecord> {
+    // `docs_view` is what puts the Docs tab in a project's sidebar, and there is
+    // no settings screen that turns it on. Creating the project without it
+    // yields one whose docs can be deployed and never opened, so it is set here
+    // rather than left as a step someone has to know about.
+    const { data } = await this.request('POST', '/projects/', { ...input, docs_view: true })
+    return data as ProjectRecord
   }
 
   async createPage(input: CreatePageInput): Promise<CreatePageResult> {

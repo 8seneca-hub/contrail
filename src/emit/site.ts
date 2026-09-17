@@ -1,4 +1,14 @@
-import { copyFileSync, mkdirSync, writeFileSync } from 'node:fs'
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
+import { homedir } from 'node:os'
 import { dirname, extname, join, posix, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import rehypeStringify from 'rehype-stringify'
@@ -17,12 +27,25 @@ import type { ArchifyOptions } from '../render/archify.js'
 import type { Mmdc } from '../render/mermaid.js'
 import { getSnapshot, sheetUrlFor, type SheetSnapshot } from '../sheets/snapshot.js'
 import type { Audience, Doc } from '../types.js'
+import { emitMarkdown } from './md.js'
 
 const SITE_CSS_PATH = fileURLToPath(new URL('../../templates/site.css', import.meta.url))
 
 export interface SiteEmitContext {
   /** `DiagramPlan.irPath` (absolute) -> path relative to the site root, e.g. "diagrams/<hash>.html". */
   diagramPaths: Record<string, string>
+  /**
+   * `DiagramPlan.irPath` (absolute) -> the rendered diagram's own HTML, inlined
+   * into the page rather than fetched.
+   *
+   * Plane serves every docs file with `X-Frame-Options: SAMEORIGIN` and
+   * `frame-ancestors 'self'`, and renders this bundle inside a `sandbox`
+   * WITHOUT `allow-same-origin` — so the page sits on an opaque origin and is
+   * never "self". A nested `<iframe src>` is therefore refused by the browser
+   * before it is fetched. `srcdoc` never touches the network, so both headers
+   * are satisfied and the diagram keeps its own isolated origin.
+   */
+  diagramHtml: Record<string, string>
   /** `AssetPlan.id` -> path relative to the site root, e.g. "assets/<hash>.png". */
   assetPaths: Record<string, string>
   /**
@@ -97,6 +120,10 @@ export interface SiteResult {
   pages: string[]
   /** Number of distinct diagram artifacts copied into the output. */
   diagrams: number
+  /** Number of `.md` files written alongside pages — one per page for a non-client build, the
+   * agent-readable counterpart `collectDocsFiles` (src/deploy/plane-docs.ts) picks up for
+   * upload. Always 0 for a `client` build — see the audience check around the write below. */
+  markdownFiles: number
   /** Links rewritten to plain text because their target was excluded from this build. */
   defangedLinks: DefangedLink[]
 }
@@ -135,11 +162,15 @@ function relativeHref(fromPageFile: string, toPageFile: string): string {
   return posix.relative(posix.dirname(fromPageFile), toPageFile)
 }
 
-function figureForDiagram(path: string, summary: string): string {
+function figureForDiagram(path: string, summary: string, html: string): string {
   const safeSummary = escapeHtml(summary)
+  // `data-diagram-src` keeps the standalone file addressable — for a direct
+  // link, and for the theme bridge — without making the page depend on
+  // fetching it. See `diagramHtml` on SiteEmitContext for why it cannot.
   return (
     '<figure class="diagram">' +
-    `<iframe src="${escapeHtml(path)}" loading="lazy" title="${safeSummary}"></iframe>` +
+    `<iframe srcdoc="${escapeHtml(html)}" data-diagram-src="${escapeHtml(path)}" ` +
+    `loading="lazy" title="${safeSummary}"></iframe>` +
     `<figcaption>${safeSummary}</figcaption>` +
     '</figure>'
   )
@@ -214,7 +245,7 @@ function transformCodeBlocks(doc: Doc, tree: Root, ctx: SiteEmitContext, rootPre
       const irPath = resolve(dirname(doc.absPath), meta.src)
       const path = ctx.diagramPaths[irPath]
       if (!path) throw new Error(`${where}: no rendered diagram found for ${meta.src}`)
-      markup = figureForDiagram(rootPrefix + path, meta.summary)
+      markup = figureForDiagram(rootPrefix + path, meta.summary, ctx.diagramHtml[irPath] ?? '')
     } else if (node.lang === 'mermaid') {
       const id = assetIdForDiagram(node.value)
       const path = ctx.assetPaths[id]
@@ -612,6 +643,27 @@ function canonicalFor(ctx: SiteEmitContext, pageFile: string): string | undefine
   return ctx.siteUrl ? `${ctx.siteUrl}/${pageFile}` : undefined
 }
 
+/** Task 1's theme bridge: the Docs tab renders this bundle in a sandboxed iframe on an opaque
+ * origin, so the page cannot read Plane's theme via `postMessage` or storage — Plane passes it as
+ * `?theme=dark|light` instead. The second half forwards the same parameter to nested diagram
+ * iframes so a page and its diagrams never disagree; without it both fall back to
+ * `prefers-color-scheme` and mismatch whenever the reader's Plane theme differs from their OS.
+ * Exported so a test asserting a page contains it can reference this constant instead of
+ * duplicating the literal — reformatting this script would otherwise break every duplicate in
+ * lockstep with this one. */
+export const THEME_SCRIPT = `<script>(function(){var t=new URLSearchParams(location.search).get("theme");
+if(t!=="dark"&&t!=="light")return;
+document.documentElement.setAttribute("data-theme",t);
+addEventListener("DOMContentLoaded",function(){
+document.querySelectorAll("iframe[src]").forEach(function(f){
+var u=new URL(f.getAttribute("src"),location.href);
+u.searchParams.set("theme",t);
+f.setAttribute("src",u.pathname+u.search);});
+document.querySelectorAll("iframe[srcdoc]").forEach(function(f){
+var d=f.getAttribute("srcdoc");
+if(d.indexOf("data-theme")===-1)return;
+f.setAttribute("srcdoc",d.replace(/data-theme="[^"]*"/,'data-theme="'+t+'"'));});});})();</script>`
+
 function pageShell(title: string, body: string, rootPrefix: string, canonicalUrl?: string): string {
   const canonicalTag = canonicalUrl ? `\n<link rel="canonical" href="${escapeHtml(canonicalUrl)}">` : ''
   return `<!doctype html>
@@ -621,6 +673,7 @@ function pageShell(title: string, body: string, rootPrefix: string, canonicalUrl
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escapeHtml(title)}</title>
 <link rel="stylesheet" href="${rootPrefix}site.css">${canonicalTag}
+${THEME_SCRIPT}
 </head>
 <body>
 ${body}
@@ -832,6 +885,64 @@ function isDirectoryReadme(doc: Doc): boolean {
   return doc.key.split('/').pop() === 'README.md'
 }
 
+/** Resolves symlinks the way `assertSafeToClean` needs: fully, so a comparison against it reflects
+ * where cleaning would actually touch disk. Falls back to the lexical path when `realpathSync`
+ * itself fails — a dangling symlink or a permissions error is not evidence of danger on its own,
+ * so this degrades to the plain path rather than blocking the build on an unrelated failure. */
+function realOrLexical(path: string): string {
+  try {
+    return realpathSync(path)
+  } catch {
+    return path
+  }
+}
+
+/**
+ * Backstop for `cleanOutDir`: `outDir` must not resolve to the filesystem root or the caller's
+ * home directory before its contents are recursively removed. `buildSite` has no notion of
+ * "project root" (it only ever sees the directory it is told to build into), so it cannot catch
+ * every misconfiguration — `siteOutDirFor` in cli.ts catches the realistic one (`--out .`
+ * resolving to the contrail project root) before `outDir` ever reaches here — but a path this
+ * degenerate is never a build output under any caller, so refusing outright costs nothing.
+ *
+ * The comparison is against the *real*, symlink-resolved path, not the lexical one: `resolve()`
+ * never dereferences a symlink, so an `outDir` that is (or sits under) a symlink — e.g. a `site`
+ * directory that is actually a symlink to the operator's home directory — would otherwise pass
+ * this check on the string alone while `readdirSync`/`rmSync` follow the symlink at the OS level
+ * and empty whatever it really points at. Resolving both sides with `realpathSync` closes that:
+ * the comparison is against where cleaning would actually happen.
+ */
+function assertSafeToClean(outDir: string): void {
+  const real = realOrLexical(resolve(outDir))
+  const dangerous = new Set([realOrLexical(resolve('/')), realOrLexical(homedir())])
+  if (dangerous.has(real)) {
+    throw new Error(
+      `Refusing to build into ${outDir} — cleaning it before the build would erase far more than a ` +
+        `build output (it resolves to ${real}). Point \`outDir\` at a dedicated build directory.`,
+    )
+  }
+}
+
+/**
+ * `buildSite`'s output directory is shared across runs — `contrail site` and every `contrail
+ * deploy` build path resolve it the same way (`siteOutDirFor` in cli.ts) — so a document removed,
+ * renamed, or reclassified since the last build would otherwise leave its old page (or, worse, an
+ * internal-only page from an earlier unfiltered build) sitting in the output next to this run's
+ * pages. Nothing here tracks what a previous run wrote, so the only reliable fix is to clear
+ * everything already there before writing anything new.
+ *
+ * Only entries *inside* `outDir` are ever removed (one `readdirSync` result at a time) — `outDir`
+ * itself is left in place, untouched if it does not exist yet, so a first build needs no special
+ * case.
+ */
+function cleanOutDir(outDir: string): void {
+  if (!existsSync(outDir)) return
+  assertSafeToClean(outDir)
+  for (const entry of readdirSync(outDir)) {
+    rmSync(join(outDir, entry), { recursive: true, force: true })
+  }
+}
+
 export async function buildSite(args: {
   /** Every document contrail knows about — not just the ones being emitted.
    * The full set is required even for a filtered build, so link defanging
@@ -860,12 +971,14 @@ export async function buildSite(args: {
     ] as const),
   )
 
+  cleanOutDir(outDir)
   mkdirSync(outDir, { recursive: true })
   mkdirSync(join(outDir, 'diagrams'), { recursive: true })
   mkdirSync(join(outDir, 'assets'), { recursive: true })
   copyFileSync(SITE_CSS_PATH, join(outDir, 'site.css'))
 
   const diagramPaths: Record<string, string> = {}
+  const diagramHtml: Record<string, string> = {}
   const assetPaths: Record<string, string> = {}
   let diagramCount = 0
 
@@ -878,6 +991,9 @@ export async function buildSite(args: {
         const rel = `diagrams/${plan.hash}.html`
         copyFileSync(plan.htmlPath, join(outDir, rel))
         diagramPaths[plan.irPath] = rel
+        // Still written as a file so it can be opened on its own; the page
+        // inlines this copy rather than pointing at it.
+        diagramHtml[plan.irPath] = readFileSync(plan.htmlPath, 'utf8')
         diagramCount++
       }
     }
@@ -896,6 +1012,7 @@ export async function buildSite(args: {
   const tree = buildSiteTree(emitted)
   const ctx: SiteEmitContext = {
     diagramPaths,
+    diagramHtml,
     assetPaths,
     docs: docPages,
     filtered: audience !== undefined,
@@ -908,11 +1025,29 @@ export async function buildSite(args: {
     tree,
   }
   const pages: string[] = []
+  let markdownFiles = 0
   for (const doc of emitted) {
-    const pagePath = join(outDir, pageFileFor(doc.key))
+    const pageFile = pageFileFor(doc.key)
+    const pagePath = join(outDir, pageFile)
     mkdirSync(dirname(pagePath), { recursive: true })
     writeFileSync(pagePath, emitSite(doc, ctx))
     pages.push(doc.key)
+
+    // `.md` ships only for a non-client build. `emitMarkdown` (src/emit/md.ts) has no
+    // equivalent of `transformLinks` above — it never visits `link` nodes at all — so it
+    // cannot defang a link into an excluded document the way this page's HTML just did. A build
+    // with `audience` left `undefined` — the only way `.md` is written, per the gate below —
+    // excludes nothing, so no href can leak that a hidden document exists; a `client` build DOES
+    // exclude internal documents, so writing their `.md` too would ship a raw, working
+    // `[text](03-management/budget.md)` link straight past the HTML defanging, the moment a
+    // client-visible document links to one. (An explicit `audience: 'internal'` build also
+    // excludes documents — `docsForAudience` filters on it same as `'client'` — but this gate
+    // only ever distinguishes `'client'` from everything else, so that case is not this comment's
+    // concern.) Do not lift this gate without first teaching `emitMarkdown` to defang links.
+    if (audience !== 'client') {
+      writeFileSync(join(outDir, pageFile.replace(/\.html$/, '.md')), emitMarkdown(doc))
+      markdownFiles++
+    }
   }
 
   writeFileSync(join(outDir, 'index.html'), emitIndex(ctx))
@@ -932,5 +1067,5 @@ export async function buildSite(args: {
   }
   writeLandingPages(tree, [])
 
-  return { outDir, pages, diagrams: diagramCount, defangedLinks }
+  return { outDir, pages, diagrams: diagramCount, markdownFiles, defangedLinks }
 }

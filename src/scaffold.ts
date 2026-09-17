@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { COLLECTION_META, DOC_KIND_SECTION, DOC_KINDS, isDocKind, type DocKind, type Section } from './doc-kinds.js'
 import type { DiataxisKind } from './types.js'
@@ -12,6 +12,42 @@ export const CONFIG_TEMPLATE = `export default {
   docs: ['./docs/**/*.md', './*/docs/**/*.md'],
 }
 `
+
+export interface PlaneTarget {
+  baseUrl: string
+  workspace: string
+  projectId: string
+}
+
+/** The config file for a project already wired to a Plane project.
+ *
+ * No API key: it is read from `PLANE_API_KEY` and must never reach a file that
+ * can be committed.
+ */
+export function renderConfig(plane?: PlaneTarget): string {
+  if (!plane) return CONFIG_TEMPLATE
+  return `export default {
+  plane: {
+    baseUrl: '${plane.baseUrl}',
+    workspace: '${plane.workspace}',
+  },
+  repos: {},
+  docs: ['./docs/**/*.md', './*/docs/**/*.md'],
+  selfhost: {
+    target: 'plane',
+    projectId: '${plane.projectId}',
+  },
+}
+`
+}
+
+/** A Plane project identifier derived from its name: uppercase alphanumerics,
+ * capped at Plane's 12-character column. Returns undefined when the name holds
+ * nothing usable, so the caller can ask for one rather than invent it. */
+export function deriveIdentifier(name: string): string | undefined {
+  const letters = name.toUpperCase().replace(/[^A-Z0-9]/g, '')
+  return letters.length > 0 ? letters.slice(0, 12) : undefined
+}
 
 interface DocKindMeta {
   title: string
@@ -357,6 +393,128 @@ function deriveCollectionTitle(docKind: DocKind, filenameStem: string): string |
   return `${match[1]} — ${spelledDate(new Date().toISOString().slice(0, 10))}`
 }
 
+/** One round of the intake interview: the questions a person can answer in a
+ * single sitting, and the documents those answers fill.
+ *
+ * Grouped by conversation, NOT by section — sections split the money questions
+ * across three folders, so asking section by section makes a person answer
+ * "who approves spend" in round one and "what approval does an overage need"
+ * in round three. Grouping by theme also collapses the near-duplicates: four
+ * documents ask some form of "who decides", and they belong in one question. */
+export interface InterviewRound {
+  theme: string
+  docKinds: DocKind[]
+}
+
+/** The rounds themselves. Lives beside `DOC_KIND_META` on purpose: adding a
+ * docKind means deciding its questions and the conversation they belong to in
+ * the same edit. `tests/interview.test.ts` fails if a scaffolded docKind ends
+ * up in no round, so a new one cannot quietly vanish from the interview. */
+export const INTERVIEW_ROUNDS: readonly InterviewRound[] = [
+  {
+    theme: 'Mandate and money — who wants this, who pays, and what it is worth',
+    docKinds: ['charter', 'business-case', 'budget', 'approval', 'estimate'],
+  },
+  {
+    theme: 'People and cadence — who decides, who is told, and how often',
+    docKinds: ['stakeholders', 'communication-plan'],
+  },
+  {
+    theme: 'Scope and assumptions — what is in, what is out, what we are taking on faith',
+    docKinds: ['scope', 'wbs', 'assumptions'],
+  },
+  {
+    theme: 'Product and domain — the user problem, the success metric, the vocabulary',
+    docKinds: ['prd', 'domain-research', 'glossary'],
+  },
+  {
+    theme: 'Technical shape — components, interfaces, and what has already been tried',
+    docKinds: ['architecture', 'api-reference', 'prototype-registry'],
+  },
+  {
+    theme: 'Delivery and risk — dates, what could go wrong, and what "done" means',
+    docKinds: ['schedule', 'risk-log', 'test-plan', 'acceptance', 'deployment', 'closure'],
+  },
+]
+
+/** A document still waiting on answers, with the questions to put to a person. */
+export interface InterviewDocument {
+  key: string
+  docKind: DocKind
+  questions: readonly string[]
+}
+
+/** A round as asked: renumbered against the rounds that still have work. */
+export interface PendingRound {
+  number: number
+  of: number
+  theme: string
+  documents: InterviewDocument[]
+}
+
+/**
+ * The interview still outstanding in `root`, round by round.
+ *
+ * A document drops out as soon as it is settled — either it grew real content
+ * or it recorded an `unanswered` reason — so this is safe to call between
+ * rounds and drives a resumable loop rather than one long dump. Rounds are
+ * renumbered over what is left, because "round 1 of 2" is the truth a person
+ * needs and "round 4 of 6" is bookkeeping from an interview they already
+ * half-finished.
+ */
+export function interviewRounds(root: string): PendingRound[] {
+  const pendingByKind = new Map<DocKind, InterviewDocument[]>()
+  for (const file of DOC_FILES) {
+    const key = `docs/${file.path}`
+    const abs = join(root, key)
+    if (!existsSync(abs)) continue
+    if (isSettled(readFileSync(abs, 'utf8'))) continue
+    const list = pendingByKind.get(file.docKind) ?? []
+    list.push({ key, docKind: file.docKind, questions: guidingQuestions(file.docKind) })
+    pendingByKind.set(file.docKind, list)
+  }
+
+  const withWork = INTERVIEW_ROUNDS.map((round) => ({
+    theme: round.theme,
+    documents: round.docKinds.flatMap((kind) => pendingByKind.get(kind) ?? []),
+  })).filter((round) => round.documents.length > 0)
+
+  return withWork.map((round, index) => ({
+    number: index + 1,
+    of: withWork.length,
+    theme: round.theme,
+    documents: round.documents,
+  }))
+}
+
+/**
+ * Whether a scaffolded document needs nothing more from a person: it recorded
+ * an `unanswered` reason, or it has a paragraph of real prose.
+ *
+ * Read off the raw file rather than through `parseDoc` so that `scaffold.ts`
+ * does not depend on the parser (and, through it, on `check.ts`, which already
+ * imports from here). The shape is the one `renderDocFile` writes a few lines
+ * up, so the two stay honest together: frontmatter, a heading, and bullets.
+ */
+function isSettled(contents: string): boolean {
+  const end = contents.indexOf('\n---', 4)
+  const frontmatter = end === -1 ? '' : contents.slice(0, end)
+  if (/^unanswered:/m.test(frontmatter)) return true
+
+  const body = end === -1 ? contents : contents.slice(end + 4)
+  return body
+    .split('\n')
+    .some((line) => line.trim() !== '' && !line.startsWith('#') && !line.startsWith('-') && !line.startsWith('*'))
+}
+
+/** The guiding questions a scaffolded document of this kind asks. Exported so
+ * that `unanswered-stub` can quote the questions a document is still ducking,
+ * and `init` can hand them over as work, from this one definition — a second
+ * copy of the questions would drift from the scaffold within a release. */
+export function guidingQuestions(docKind: DocKind): readonly string[] {
+  return DOC_KIND_META[docKind].questions
+}
+
 /** Renders a scaffolded document: correct frontmatter plus a short prompt —
  * a few guiding questions, never a lecture — describing what belongs here.
  * `targetPath`, when given, lets a collection docKind (Task 7) derive its
@@ -543,6 +701,43 @@ export interface ScaffoldResult {
   skipped: string[]
 }
 
+/** The work a fresh scaffold just created, stated as the questions each new
+ * document has to answer.
+ *
+ * `init` reports this because the alternative is what actually happens
+ * otherwise: the tree gets published with its placeholder pages intact,
+ * because nobody reading a list of `CREATED` paths can see which of them are
+ * questions waiting for answers. Only the template's docKind-bearing files
+ * appear — the config, the metadata file and the folder READMEs have no
+ * questions to answer. */
+export function guidingQuestionReportLines(result: ScaffoldResult): string[] {
+  const created = new Set(result.created)
+  const pending = DOC_FILES.filter((file) => created.has(`docs/${file.path}`))
+  if (pending.length === 0) return []
+
+  const lines = [
+    '',
+    `${pending.length} document(s) ask guiding questions that are not answered yet. In order:`,
+    '',
+    '  1. Answer what the material you were given actually answers.',
+    '  2. ASK A PERSON the rest. Run `contrail questions` for them grouped into rounds, and put each',
+    '     round to whoever is in the conversation with you. They are the only source that can answer',
+    '     most of these.',
+    '  3. Only what they say they do not know earns `unanswered: "<what is missing, and that they',
+    '     were asked>"`, plus a row in 03-management/open-questions.md.',
+    '',
+    'Never invent a figure, a name or a date to fill a gap. `contrail deploy` refuses until every',
+    'document is answered or marked, and marking them all is how a docs tree becomes placeholder.',
+    '',
+  ]
+  for (const file of pending) {
+    lines.push(`docs/${file.path}`)
+    lines.push(...guidingQuestions(file.docKind).map((question) => `  - ${question}`))
+    lines.push('')
+  }
+  return lines
+}
+
 /** Writes `contents` to `absPath` unless it already exists. Never
  * overwrites — an `init` run against a live project must not lose work. */
 function writeIfAbsent(absPath: string, contents: string, key: string, result: ScaffoldResult): void {
@@ -559,6 +754,9 @@ export interface InitTemplateOptions {
   client?: string
   project?: string
   startDate?: string
+  /** Present when `init` created or was pointed at a Plane project, so the
+   * config it writes is already wired to deploy. */
+  plane?: PlaneTarget
 }
 
 /**
@@ -570,7 +768,7 @@ export interface InitTemplateOptions {
 export function runInitTemplate(cwd: string, opts: InitTemplateOptions = {}): ScaffoldResult {
   const result: ScaffoldResult = { created: [], skipped: [] }
 
-  writeIfAbsent(join(cwd, 'contrail.config.ts'), CONFIG_TEMPLATE, 'contrail.config.ts', result)
+  writeIfAbsent(join(cwd, 'contrail.config.ts'), renderConfig(opts.plane), 'contrail.config.ts', result)
 
   const docsRoot = join(cwd, 'docs')
   const meta = {

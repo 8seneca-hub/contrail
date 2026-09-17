@@ -1,21 +1,34 @@
-import { existsSync, writeFileSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+#!/usr/bin/env node
+import { existsSync, realpathSync, writeFileSync } from 'node:fs'
+import { basename, join, resolve } from 'node:path'
+import { clearConnection, credentialsPath, loadConnection } from './auth/credentials.js'
+import { openBrowser, promptLine, promptSecret, runLogin } from './auth/login.js'
 import { parseArgs } from 'node:util'
 import { globSync } from 'tinyglobby'
-import { buildLlmsTxt, checkDocs, checkExitCode, docStatusReport, writeLlmsTxt } from './check.js'
+import { checkDocs, checkExitCode, docStatusReport, writeLlmsTxt, writeSiteLlmsTxt } from './check.js'
 import { findConfigPath, loadConfig, readProjectMeta } from './config.js'
 import { contextEmptyMessage, contextQuery, contextRule, isTaskType, TASK_TYPES, type TaskType } from './context.js'
 import { defaultCliRunner, deploy, parseDeployAudience, parseDeployTarget } from './deploy.js'
 import { createRailwayTransport } from './deploy/railway.js'
 import { createPlaneDocsTransport } from './deploy/plane-docs.js'
 import type { DeployTransport } from './deploy/transport.js'
-import { buildSite, docsForAudience, pageFileFor } from './emit/site.js'
+import { buildSite, docsForAudience } from './emit/site.js'
 import { loadLock, saveLock } from './lock.js'
 import { parseDoc } from './parse.js'
-import { PlaneClient } from './plane/client.js'
+import { previewDrift, writePreviewManifest } from './preview.js'
+import { PlaneApiError, PlaneClient } from './plane/client.js'
 import { publishDocs, type PublishOptions, type PublishResult } from './plane/publish.js'
-import type { PlaneApi } from './plane/client.js'
-import { CONFIG_TEMPLATE, runInitTemplate, scaffoldDoc, type ScaffoldResult } from './scaffold.js'
+import type { PlaneApi, PlaneProjectApi } from './plane/client.js'
+import {
+  CONFIG_TEMPLATE,
+  deriveIdentifier,
+  guidingQuestionReportLines,
+  interviewRounds,
+  runInitTemplate,
+  scaffoldDoc,
+  type PlaneTarget,
+  type ScaffoldResult,
+} from './scaffold.js'
 import { credentialsPathFor, createGoogleSheetsClient } from './sheets/client.js'
 import { pullSheets, pushSheets, type PullResult, type PushResult } from './sheets/sync.js'
 import type { Audience, Config, Doc, Lock } from './types.js'
@@ -137,22 +150,26 @@ export async function publishAndSave(args: {
   }
 }
 
-/** `--out` defaults to `<config.root>/site`; a relative `--out` resolves against `config.root`. */
-export function siteOutDirFor(config: Config, out: string | undefined): string {
-  return resolve(config.root, out ?? 'site')
-}
-
 /**
- * Where `site` writes its own filtered `llms.txt` — INSIDE the site output,
- * next to the pages it describes. This is Ruling 2: `site --audience client`
- * and a separate `check --index --audience client` are two commands whose
- * flags must agree, and a mismatched pair leaks an index of internal
- * documents. One command producing both halves of the artifact removes that
- * failure mode entirely. Standalone `check --index` is unaffected — it still
- * writes `docs/llms.txt` for the agent-facing tree.
+ * `--out` defaults to `<config.root>/site`; a relative `--out` resolves against `config.root`.
+ *
+ * Refuses when that resolves to `config.root` itself (an `--out .`, typically): `buildSite` now
+ * clears its output directory before every build (see the comment on `cleanOutDir` in
+ * `emit/site.ts`), and `config.root` is where `contrail.config.ts` and `docs/` live — the project
+ * this build reads from, not a build artifact. Catch it here, before any file is touched, rather
+ * than let `site`/`deploy` hand `buildSite` a directory whose "previous run's leftovers" are the
+ * entire project.
  */
-export function siteLlmsTxtPath(outDir: string): string {
-  return join(outDir, 'llms.txt')
+export function siteOutDirFor(config: Config, out: string | undefined): string {
+  const outDir = resolve(config.root, out ?? 'site')
+  if (outDir === resolve(config.root)) {
+    throw new Error(
+      `Refusing to use ${outDir} as the build output directory — it is the project root, where ` +
+        'contrail.config.ts and docs/ live. contrail clears this directory before every build, so ' +
+        'that would erase the project it just read from. Choose a subdirectory, e.g. `--out site`.',
+    )
+  }
+  return outDir
 }
 
 /**
@@ -207,12 +224,75 @@ async function readlineConfirm(message: string): Promise<boolean> {
   }
 }
 
+/** The Plane API key, from the environment or the saved connection.
+ *
+ * `PLANE_API_KEY` wins so CI can override a developer's saved login without
+ * touching their machine. Neither source is a config file: a key in
+ * `contrail.config.ts` would be committed.
+ */
 function requireApiKey(): string {
-  const key = process.env.PLANE_API_KEY
+  const key = process.env.PLANE_API_KEY ?? loadConnection()?.apiKey
   if (!key) {
-    throw new Error('PLANE_API_KEY is not set. Export it; it must never be stored in a config file.')
+    throw new Error('Not connected to Plane. Run `contrail login`, or export PLANE_API_KEY.')
   }
   return key
+}
+
+export interface PlaneTargetRequest {
+  baseUrl?: string
+  workspace?: string
+  projectId?: string
+  name: string
+  identifier?: string
+}
+
+/** Resolve the Plane project `init` should wire the new config to, creating it
+ * when no `--project-id` was given.
+ *
+ * `--plane-url` and `--workspace` are required together: a base URL with no
+ * workspace addresses nothing, and skipping the Plane step on a half-given pair
+ * would leave a config that looks wired and is not.
+ */
+export async function resolvePlaneTarget(
+  request: PlaneTargetRequest,
+  createClient: (opts: { baseUrl: string; workspace: string; apiKey: string }) => PlaneProjectApi = (opts) =>
+    new PlaneClient(opts),
+): Promise<PlaneTarget> {
+  const { baseUrl, workspace } = request
+  if (!baseUrl || !workspace) {
+    throw new Error('--plane-url and --workspace must be given together.')
+  }
+
+  const normalisedBaseUrl = baseUrl.replace(/\/+$/, '')
+  const client = createClient({ baseUrl: normalisedBaseUrl, workspace, apiKey: requireApiKey() })
+
+  if (request.projectId) {
+    // An existing project almost certainly has `docs_view` off - it defaults to
+    // false and no settings screen turns it on. Without this the deploy
+    // succeeds and the tab never appears, which looks like a broken publish
+    // rather than a disabled feature.
+    await client.enableDocsView(request.projectId)
+    return { baseUrl: normalisedBaseUrl, workspace, projectId: request.projectId }
+  }
+
+  const identifier = request.identifier ?? deriveIdentifier(request.name)
+  if (!identifier) {
+    throw new Error(`Cannot derive a Plane project identifier from '${request.name}'. Pass --identifier.`)
+  }
+
+  try {
+    const project = await client.createProject({ name: request.name, identifier })
+    return { baseUrl: normalisedBaseUrl, workspace, projectId: project.id }
+  } catch (error) {
+    if (error instanceof PlaneApiError && error.status === 409) {
+      throw new Error(
+        `Plane already has a project with identifier '${identifier}' in workspace '${workspace}'. ` +
+          'Pass --identifier for a different one, or --project-id to write docs into the existing project.',
+        { cause: error },
+      )
+    }
+    throw error
+  }
 }
 
 export async function main(argv: string[]): Promise<number> {
@@ -235,6 +315,12 @@ export async function main(argv: string[]): Promise<number> {
       client: { type: 'string' },
       project: { type: 'string' },
       'start-date': { type: 'string' },
+      'plane-url': { type: 'string' },
+      'no-browser': { type: 'boolean', default: false },
+      'no-plane': { type: 'boolean', default: false },
+      workspace: { type: 'string' },
+      identifier: { type: 'string' },
+      'project-id': { type: 'string' },
       task: { type: 'string' },
       limit: { type: 'string' },
     },
@@ -244,13 +330,48 @@ export async function main(argv: string[]): Promise<number> {
 
   if (command === 'help') {
     console.log(
-      'contrail init [--template agency-project] | build | status [--json] | ' +
+      'contrail login [--plane-url <url>] [--workspace <slug>] [--no-browser] | logout | ' +
+        'init [--template agency-project] [--no-plane] ' +
+        '[--plane-url <url> --workspace <slug> [--project <name>] [--identifier <KEY>] [--project-id <uuid>]] | ' +
+        'build | status [--json] | questions [--json] | preview [--out <dir>] [--audience client] | ' +
         'publish [--dry-run] [--force] [--only <substring>] [--audience client] | ' +
         'site [--out <dir>] [--audience client] | check [--strict] [--index] [--audience client] [--json] | ' +
         'scaffold <docKind> <path> [--json] | sheet pull <doc> | sheet push <doc> [--force] | ' +
         'deploy [--audience client|internal] [--target vercel|plane|railway] [--prod] [--dry-run] [--yes] | ' +
         `context [--task <${TASK_TYPES.join('|')}>] [keywords...] [--audience client] [--json] [--limit <n>]`,
     )
+    return 0
+  }
+
+  if (command === 'login') {
+    try {
+      const path = await runLogin(
+        {
+          baseUrl: values['plane-url'],
+          workspace: values.workspace,
+          openBrowserFirst: values['no-browser'] !== true,
+        },
+        {
+          ask: promptLine,
+          askSecret: promptSecret,
+          open: openBrowser,
+          verify: async ({ baseUrl, workspace, apiKey }) => {
+            await new PlaneClient({ baseUrl, workspace, apiKey }).listProjects()
+          },
+          log: (line) => console.log(line),
+        },
+      )
+      console.log(`Connected. Saved to ${path}`)
+      return 0
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error))
+      return 1
+    }
+  }
+
+  if (command === 'logout') {
+    const path = credentialsPath()
+    console.log(clearConnection() ? `Removed ${path}` : `No saved connection at ${path}`)
     return 0
   }
 
@@ -263,12 +384,43 @@ export async function main(argv: string[]): Promise<number> {
       console.error(`Unknown template '${values.template}'. Only 'agency-project' is supported.`)
       return 2
     }
+    const projectName = values.project ?? basename(process.cwd())
+    // A saved login is what makes `contrail init --project "..."` enough on its
+    // own; the flags stay, for CI and for pointing at a second Plane. `--no-plane`
+    // scaffolds locally without creating anything remote, which is also what an
+    // offline machine needs.
+    const saved = values['no-plane'] ? undefined : loadConnection()
+    const baseUrl = values['no-plane'] ? undefined : (values['plane-url'] ?? saved?.baseUrl)
+    const workspace = values['no-plane'] ? undefined : (values.workspace ?? saved?.workspace)
+
+    let plane: PlaneTarget | undefined
+    if (baseUrl !== undefined || workspace !== undefined) {
+      try {
+        plane = await resolvePlaneTarget({
+          baseUrl,
+          workspace,
+          projectId: values['project-id'],
+          name: projectName,
+          identifier: values.identifier,
+        })
+      } catch (error) {
+        console.error(error instanceof Error ? error.message : String(error))
+        return 1
+      }
+    }
+
     const result = runInitTemplate(process.cwd(), {
       client: values.client,
       project: values.project,
       startDate: values['start-date'],
+      plane,
     })
     for (const line of scaffoldReportLines(result)) console.log(line)
+    for (const line of guidingQuestionReportLines(result)) console.log(line)
+    if (plane) {
+      console.log(`Plane project  ${plane.projectId}`)
+      console.log(`Docs tab       ${plane.baseUrl}/${plane.workspace}/projects/${plane.projectId}/docs/`)
+    }
     return 0
   }
 
@@ -306,6 +458,55 @@ export async function main(argv: string[]): Promise<number> {
 
     const config = loadConfig(findConfigPath(process.cwd()))
     const allDocs = findDocs(config).map((path) => parseDoc(path, config.root))
+
+    // The unanswered gate runs BEFORE every other deploy guard, including the
+    // transport checks below: a tree whose documents still ask their guiding
+    // questions should not get far enough into a deploy to fail on a Vercel
+    // link. Only `unanswered-stub` blocks — the rest of `check` stays advisory,
+    // so this adds one refusal rather than making every warning fatal.
+    if (!values.force) {
+      const findings = checkDocs(allDocs)
+
+      const unanswered = findings.filter((f) => f.rule === 'unanswered-stub')
+      if (unanswered.length > 0) {
+        for (const finding of unanswered) console.error(formatFinding(finding))
+        console.error(
+          `Refusing to deploy: ${unanswered.length} document(s) leave their guiding questions ` +
+            'unanswered. Answer them, set `unanswered: "<why not>"` on each one to record what is ' +
+            'missing, or re-run with --force to publish them as they are.',
+        )
+        return 1
+      }
+
+      // A document nobody drew is a document a reader has to reconstruct from
+      // prose. Gated here for the same reason as the questions: a warning
+      // nobody has to clear is how the old 400-word rule hid an entire tree
+      // with no diagram in it.
+      const undiagrammed = findings.filter((f) => f.rule === 'undiagrammed-doc')
+      if (undiagrammed.length > 0) {
+        for (const finding of undiagrammed) console.error(formatFinding(finding))
+        console.error(
+          `Refusing to deploy: ${undiagrammed.length} document(s) have no diagram. Add an ` +
+            '`archify` block, set `nodiagram: "<why there is nothing to draw>"` where a document ' +
+            'genuinely has no shape, or re-run with --force.',
+        )
+        return 1
+      }
+
+      // A preview someone approved is a promise about what ships. If a document
+      // moved since, that promise no longer covers this build — in an agent loop
+      // the edit and the deploy can be one turn apart.
+      const drifted = previewDrift(config.root, siteOutDirFor(config, values.out), allDocs)
+      if (drifted.length > 0) {
+        for (const key of drifted) console.error(`CHANGED  ${key}`)
+        console.error(
+          `Refusing to deploy: ${drifted.length} document(s) changed since the preview was built, so ` +
+            'this build differs from the preview that was confirmed. Run `contrail preview` again and ' +
+            're-confirm, or re-run with --force to ship without a fresh confirmation.',
+        )
+        return 1
+      }
+    }
 
     // Only the self-hosted targets need a transport, and each one is built from the matching
     // `selfhost` config. `deploy()` itself reports the actionable error when the config is absent
@@ -383,20 +584,15 @@ export async function main(argv: string[]): Promise<number> {
       siteUrl,
     })
 
-    // Ruling 2: the same --audience filter that governed the pages governs
-    // this llms.txt too, written INTO the site output — one command, one
-    // self-consistent artifact. Links point at the emitted page files
-    // (`pageFileFor`), not the source .md paths, since only the pages exist
-    // at this location. Standalone `check --index` is untouched. `baseUrl`
-    // makes the links absolute when this build's own address is configured
-    // (Task 3): an agent can fetch a document directly instead of guessing.
-    const llmsPath = siteLlmsTxtPath(result.outDir)
-    writeFileSync(
-      llmsPath,
-      buildLlmsTxt(config, docsForAudience(allDocs, audience), { linkFor: (doc) => pageFileFor(doc.key), baseUrl: siteUrl }),
-    )
+    // Ruling 2: the same --audience filter that governed the pages governs this llms.txt too — see
+    // `writeSiteLlmsTxt` in check.ts, shared with both `contrail deploy` build paths. `baseUrl`
+    // makes the links absolute when this build's own address is configured (Task 3): an agent can
+    // fetch a document directly instead of guessing. Standalone `check --index` is untouched.
+    const llmsPath = writeSiteLlmsTxt(config, allDocs, audience, result.outDir, siteUrl)
 
-    console.log(`Wrote ${result.pages.length} page(s) and ${result.diagrams} diagram(s) to ${result.outDir}`)
+    console.log(
+      `Wrote ${result.pages.length} page(s), ${result.markdownFiles} markdown file(s), and ${result.diagrams} diagram(s) to ${result.outDir}`,
+    )
     console.log(`Wrote ${llmsPath}`)
     if (audience === 'client' && result.pages.length === 0) {
       console.log(emptyClientSiteMessage())
@@ -491,12 +687,74 @@ export async function main(argv: string[]): Promise<number> {
     return 0
   }
 
+  if (command === 'preview') {
+    const siteUrl = siteUrlFor(config, audience)
+    const result = await buildSite({
+      docs: allDocs,
+      outDir: siteOutDirFor(config, values.out),
+      cacheDir: join(config.root, '.contrail', 'cache'),
+      archify: config.archify,
+      audience,
+      projectName: readProjectMeta(config.root)?.project,
+      siteUrl,
+    })
+    writeSiteLlmsTxt(config, allDocs, audience, result.outDir, siteUrl)
+    writePreviewManifest(result.outDir, docsForAudience(allDocs, audience))
+    const entry = join(result.outDir, 'index.html')
+    console.log(
+      `Built ${result.pages.length} page(s) for ${audience ?? 'internal'}, plus ${result.markdownFiles} markdown ` +
+        `file(s) for agents, to ${result.outDir}`,
+    )
+    console.log('')
+    console.log('Open this to confirm what a human will see in Plane:')
+    console.log(`  file://${entry}`)
+    console.log('')
+    console.log(
+      'This is the same HTML `contrail deploy` uploads. The matching `.md` of every page ships ' +
+        'alongside it for agents to read; a human following the Docs tab only ever reaches the HTML. ' +
+        'Deploy refuses if a document changes after this preview, so confirm and then deploy.',
+    )
+    return 0
+  }
+
+  if (command === 'questions') {
+    const rounds = interviewRounds(config.root)
+
+    if (values.json) {
+      console.log(JSON.stringify({ rounds }))
+      return 0
+    }
+
+    if (rounds.length === 0) {
+      console.log('No questions outstanding — the interview is complete. Run `contrail check`, then deploy.')
+      return 0
+    }
+
+    const documents = rounds.reduce((total, round) => total + round.documents.length, 0)
+    console.log(
+      `${documents} document(s) still need answers, grouped into ${rounds.length} round(s). ` +
+        'Ask a person these questions — they are the one source that can answer them. Ask a whole ' +
+        'round at a time, fill the documents from what they say, then run this again for the next ' +
+        'round. Only what they tell you they do not know earns an `unanswered` reason.',
+    )
+    for (const round of rounds) {
+      console.log('')
+      console.log(`Round ${round.number} of ${round.of} — ${round.theme}`)
+      for (const doc of round.documents) {
+        console.log(`  ${doc.key}`)
+        for (const question of doc.questions) console.log(`    - ${question}`)
+      }
+    }
+    return 0
+  }
+
   if (command === 'status') {
     const lock = loadLock(config.root)
     const report = docStatusReport(allDocs)
     const stubs = new Set(report.stubs)
     const noOwner = new Set(report.noOwner)
     const overdue = new Set(report.overdue)
+    const unanswered = new Set(report.unanswered)
 
     const entries = docs.map((doc) => ({
       key: doc.key,
@@ -505,6 +763,7 @@ export async function main(argv: string[]): Promise<number> {
       stub: stubs.has(doc.key),
       noOwner: noOwner.has(doc.key),
       overdue: overdue.has(doc.key),
+      unanswered: unanswered.has(doc.key),
     }))
 
     if (values.json) {
@@ -512,22 +771,29 @@ export async function main(argv: string[]): Promise<number> {
         JSON.stringify({
           docs: entries,
           missingCoreDocs: report.missingCoreDocs.map((f) => ({ section: f.doc, message: f.message })),
-          summary: { stubs: report.stubs.length, noOwner: report.noOwner.length, overdue: report.overdue.length },
+          summary: {
+            stubs: report.stubs.length,
+            noOwner: report.noOwner.length,
+            overdue: report.overdue.length,
+            unanswered: report.unanswered.length,
+          },
         }),
       )
       return 0
     }
 
     for (const e of entries) {
-      const flags = [e.stub && 'stub', e.noOwner && 'no-owner', e.overdue && 'overdue'].filter(Boolean)
+      const flags = [e.stub && 'stub', e.unanswered && 'unanswered', e.noOwner && 'no-owner', e.overdue && 'overdue'].filter(
+        Boolean,
+      )
       console.log(
         `${e.pageId ?? 'unpublished'}  ${e.status.padEnd(8)}  ${e.key}${flags.length ? `  [${flags.join(',')}]` : ''}`,
       )
     }
     console.log('')
     console.log(
-      `Documentation health: ${report.stubs.length} stub(s), ${report.noOwner.length} with no owner, ` +
-        `${report.overdue.length} overdue for review.`,
+      `Documentation health: ${report.stubs.length} stub(s), ${report.unanswered.length} unanswered, ` +
+        `${report.noOwner.length} with no owner, ${report.overdue.length} overdue for review.`,
     )
     for (const f of report.missingCoreDocs) console.log(`  MISSING  ${f.message}`)
     return 0
@@ -607,7 +873,13 @@ export async function main(argv: string[]): Promise<number> {
   return 2
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// `npm link` and a global install both put a *symlink* on PATH, so `argv[1]` is
+// that symlink while `import.meta.filename` is the file it resolves to. Comparing
+// them unresolved made the CLI a silent no-op when invoked by name - it exited 0
+// having run nothing. Interpolating into `file://` was wrong for a second reason:
+// a path containing a space or a non-ASCII character never matches the encoded
+// URL that `import.meta.url` carries.
+if (process.argv[1] && realpathSync(process.argv[1]) === import.meta.filename) {
   main(process.argv.slice(2))
     .then((code) => process.exit(code))
     .catch((error: unknown) => {

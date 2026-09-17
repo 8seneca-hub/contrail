@@ -1,70 +1,85 @@
+/* Colour tokens and type match Archify's rendered diagrams, so a document and the diagram inside it
+   read as one surface rather than two. Values are Archify's own (Tailwind slate for the neutrals,
+   emerald/cyan/violet/amber/rose for the accents); the monospace stack is the one its labels use,
+   with no webfont so nothing depends on the network.
+
+   Copied rather than imported on purpose: the Docs tab renders this bundle in a sandboxed iframe on
+   an opaque origin, which cannot reach a stylesheet outside it. Nothing here updates by itself.
+
+   Status names are contrail's, each mapped to the Archify accent of the same meaning —
+   draft~amber, review~cyan, current~emerald, stale~rose. Alert callouts reuse them (note~review,
+   tip~current, warning~draft, caution~stale) and add violet, the one tone with no status
+   equivalent. */
 :root {
   color-scheme: light dark;
-  --bg: #ffffff;
-  --bg-raised: #f6f7f9;
-  --fg: #1a1d23;
-  --fg-muted: #5a6270;
-  --border: #e2e5ea;
-  --link: #1d5fd6;
-  --link-visited: #6b3fb8;
-  --status-draft-bg: #fffbeb;
-  --status-draft-fg: #92400e;
-  --status-review-bg: #eff6ff;
-  --status-review-fg: #1e40af;
-  --status-current-bg: #ecfdf5;
-  --status-current-fg: #065f46;
-  --status-stale-bg: #fef2f2;
-  --status-stale-fg: #991b1b;
-  --code-bg: #f2f3f5;
-  /* Alert callouts reuse the status palette (note~review, tip~current,
-     warning~draft, caution~stale) and add only the one tone with no status
-     equivalent. */
-  --callout-important-bg: #eef2ff;
-  --callout-important-fg: #4338ca;
+  --bg: #f4f9fc;
+  --bg-raised: #ffffff;
+  --fg: #0f172a;
+  --fg-muted: #64748b;
+  --border: #e2e8f0;
+  --link: #0891b2;
+  --status-draft-bg: #fef3c7;
+  --status-draft-fg: #b45309;
+  --status-review-bg: #cffafe;
+  --status-review-fg: #0e7490;
+  --status-current-bg: #d1fae5;
+  --status-current-fg: #047857;
+  --status-stale-bg: #ffe4e6;
+  --status-stale-fg: #be123c;
+  --code-bg: #f1f5f9;
+  --banner-bg: #be123c;
+  --banner-fg: #ffffff;
+  --link-visited: #7c3aed;
+  --callout-important-bg: #ede9fe;
+  --callout-important-fg: #6d28d9;
 }
 
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme='light']) {
-    --bg: #16181d;
-    --bg-raised: #1e2127;
-    --fg: #e7e9ee;
-    --fg-muted: #9aa3b2;
-    --border: #2b2f37;
-    --link: #7fa8ff;
-    --link-visited: #b79bec;
-    --status-draft-bg: #3a2f11;
-    --status-draft-fg: #f2c464;
-    --status-review-bg: #16273f;
-    --status-review-fg: #8fb8ff;
-    --status-current-bg: #0f2c22;
-    --status-current-fg: #6fd9ae;
-    --status-stale-bg: #3a1414;
-    --status-stale-fg: #f29b9b;
-    --code-bg: #21252c;
-    --callout-important-bg: #201c47;
-    --callout-important-fg: #b4beff;
+  :root:not([data-theme="light"]) {
+    --bg: #030711;
+    --bg-raised: #0f172a;
+    --fg: #ffffff;
+    --fg-muted: #94a3b8;
+    --border: #1e293b;
+    --link: #22d3ee;
+    --status-draft-bg: #451a03;
+    --status-draft-fg: #fbbf24;
+    --status-review-bg: #083344;
+    --status-review-fg: #22d3ee;
+    --status-current-bg: #064e3b;
+    --status-current-fg: #34d399;
+    --status-stale-bg: #881337;
+    --status-stale-fg: #fb7185;
+    --code-bg: #0f172a;
+    --banner-bg: #9f1239;
+    --banner-fg: #ffffff;
+    --link-visited: #a78bfa;
+    --callout-important-bg: #4c1d95;
+    --callout-important-fg: #a78bfa;
   }
 }
 
-:root[data-theme='dark'] {
-  --bg: #16181d;
-  --bg-raised: #1e2127;
-  --fg: #e7e9ee;
-  --fg-muted: #9aa3b2;
-  --border: #2b2f37;
-  --link: #7fa8ff;
-  --link-visited: #b79bec;
-  --status-draft-bg: #3a2f11;
-  --status-draft-fg: #f2c464;
-  --status-review-bg: #16273f;
-  --status-review-fg: #8fb8ff;
-  --status-current-bg: #0f2c22;
-  --status-current-fg: #6fd9ae;
-  --status-stale-bg: #3a1414;
-  --status-stale-fg: #f29b9b;
-  --code-bg: #21252c;
-  --callout-important-bg: #201c47;
-  --callout-important-fg: #b4beff;
+:root[data-theme="dark"] {
+  --bg: #020617;
+  --bg-raised: #0f172a;
+  --fg: #ffffff;
+  --fg-muted: #94a3b8;
+  --border: #1e293b;
+  --link: #22d3ee;
+  --status-draft-bg: #451a03;
+  --status-draft-fg: #fbbf24;
+  --status-review-bg: #083344;
+  --status-review-fg: #22d3ee;
+  --status-current-bg: #064e3b;
+  --status-current-fg: #34d399;
+  --status-stale-bg: #881337;
+  --status-stale-fg: #fb7185;
+  --code-bg: #0f172a;
+  --banner-bg: #9f1239;
+  --banner-fg: #ffffff;
+  --link-visited: #a78bfa;
+  --callout-important-bg: #4c1d95;
+  --callout-important-fg: #a78bfa;
 }
 
 * {
@@ -75,16 +90,21 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--fg);
-  font: 16px/1.6 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  font: 15px/1.7 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono',
+    'Liberation Mono', 'Noto Sans Mono CJK SC', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei',
+    monospace;
   -webkit-font-smoothing: antialiased;
 }
 
 .page-header,
 main,
 footer {
-  max-width: 70ch;
+  /* Full width by request. A diagram is the widest thing on the page and a
+     70ch column cropped it to under half the viewport, so the column went
+     rather than the diagram. */
+  max-width: none;
   margin: 0 auto;
-  padding-inline: 1.25rem;
+  padding-inline: clamp(1.25rem, 4vw, 4rem);
 }
 
 /* Build-identity banner (Task 1): present on every page of a restricted build, absent everywhere
@@ -96,8 +116,8 @@ footer {
   position: sticky;
   top: 0;
   z-index: 20;
-  background: #b91c1c;
-  color: #fff;
+  background: var(--banner-bg);
+  color: var(--banner-fg);
   font-weight: 700;
   text-align: center;
   padding: 0.6rem 1rem;
@@ -365,19 +385,27 @@ img {
 figure.diagram {
   margin-block: 2rem;
   padding: 0;
-  width: min(96rem, 94vw);
-  margin-left: calc(50% - min(48rem, 47vw));
-  margin-right: calc(50% - min(48rem, 47vw));
+  /* Edge to edge: break out of `main`'s padding entirely, so the diagram is the
+     full width of the window rather than a panel sitting inside the text. */
+  width: 100vw;
+  margin-left: calc(50% - 50vw);
+  margin-right: calc(50% - 50vw);
 }
 
 figure.diagram iframe {
   width: 100%;
-  height: 32rem;
-  max-height: 70vh;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--bg-raised);
+  /* `max-height: 70vh` used to clamp this to ~518px while the diagram's own
+     layout needed ~894px, which is where the inner scrollbar came from. Archify
+     fills whatever height it is given above that minimum, so give it a floor in
+     rem and let a tall window use more. */
+  height: max(56rem, 80vh);
+  border: 0;
+  border-radius: 0;
+  /* No card chrome and no background of our own: the diagram paints its own,
+     and `--bg` above is now the same colour, so the two meet without a seam. */
+  background: transparent;
   display: block;
+  color-scheme: inherit;
 }
 
 figure.asset {

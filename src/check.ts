@@ -12,8 +12,9 @@ import {
   type DocKind,
   type Section,
 } from './doc-kinds.js'
-import { CORE_DOC_KINDS } from './scaffold.js'
-import type { Config, Doc } from './types.js'
+import { docsForAudience, pageFileFor } from './emit/site.js'
+import { CORE_DOC_KINDS, guidingQuestions } from './scaffold.js'
+import type { Audience, Config, Doc } from './types.js'
 
 export interface Finding {
   doc: string
@@ -212,18 +213,55 @@ function checkStepsWithoutDiagram(doc: Doc, children: RootContent[], findings: F
   }
 }
 
+/**
+ * A document with nothing to look at.
+ *
+ * Every document earns a diagram, not only the long ones: the previous rule
+ * fired above 400 words, which is how a whole tree of short documents shipped
+ * without a single diagram in it. A reader who has to reconstruct the shape of
+ * a system from prose is doing work the author should have done.
+ *
+ * `nodiagram` is the way out, and it takes a reason, because some documents
+ * genuinely have no shape — a glossary is a list of terms, an approvals log is
+ * a set of dates. A filler diagram on those is worse than none: it teaches a
+ * reader that the diagrams here are decoration.
+ *
+ * Exempt: a document with no `docKind` is a folder README, a pointer rather
+ * than a document. Stubs never reach this rule at all (see `checkDocs`) —
+ * `unanswered-stub` owns those, and a document with no content yet has no
+ * shape to draw either.
+ */
 function checkUndiagrammedDoc(doc: Doc, findings: Finding[]): void {
   if (containsDiagram(doc.tree.children)) return
-  const words = wordCount(doc.body)
-  if (words <= 400) return
+  if (doc.frontmatter.docKind === undefined) return
+  if (doc.frontmatter.nodiagram !== undefined) return
 
   findings.push({
     doc: doc.key,
     rule: 'undiagrammed-doc',
+    severity: 'error',
+    message:
+      `This document (${wordCount(doc.body)} words) has no diagram — describe its shape with an ` +
+      '`archify` block (architecture, workflow, sequence, dataflow, or lifecycle — pick the type ' +
+      'that fits), or set `nodiagram: "<why there is nothing to draw>"` in its frontmatter.',
+  })
+}
+
+/**
+ * The mirror of `undiagrammed-doc`: a document that gained a diagram but kept
+ * the excuse for not having one. Same reason `stale-unanswered` exists — a
+ * marker nobody removed makes the next reader distrust every other marker.
+ */
+function checkStaleNodiagram(doc: Doc, findings: Finding[]): void {
+  if (doc.frontmatter.nodiagram === undefined) return
+  if (!containsDiagram(doc.tree.children)) return
+  findings.push({
+    doc: doc.key,
+    rule: 'stale-nodiagram',
     severity: 'warn',
     message:
-      `This document is ${words} words with no diagram at all — describe its shape with an ` +
-      '`archify` block (architecture, workflow, sequence, dataflow, or lifecycle — pick the type that fits).',
+      'This document has a diagram but still carries `nodiagram` in its frontmatter — remove it, ' +
+      'or the next reader cannot tell which markers still mean anything.',
   })
 }
 
@@ -465,13 +503,12 @@ export function pathSection(key: string): Section | undefined {
 }
 
 /**
- * A stub is not a problem by itself — a fresh `init --template` is nothing
- * BUT stubs, and that must lint clean. It becomes worth a warning only once
- * someone has promoted it past `draft` (review/current/stale) while the body
- * is still just the placeholder — a claim of progress the content doesn't
- * back up. This is also the ONE report a stub gets: the six content rules
- * above all skip a stub outright (see `checkDocs`), so a stub is never
- * double-reported.
+ * A stub whose `status` has been promoted past `draft` (review/current/stale)
+ * while the body is still the placeholder — a claim of progress the content
+ * doesn't back up. The six content rules skip a stub outright (see
+ * `checkDocs`), so the only reports a stub can earn are this one and
+ * `unanswered-stub` below, which answer different questions: this one is
+ * about a false status, that one about unanswered questions.
  */
 function checkEmptyStub(doc: Doc, findings: Finding[]): void {
   if (!isStub(doc)) return
@@ -483,6 +520,57 @@ function checkEmptyStub(doc: Doc, findings: Finding[]): void {
     message:
       `This document is marked \`status: ${doc.frontmatter.status}\` but still has only its scaffolded ` +
       'placeholder content (guiding questions/notes, no prose) — fill it in, or move it back to `status: draft`.',
+  })
+}
+
+/**
+ * A scaffolded document still asking its guiding questions, with no record of
+ * why. This is the rule a fresh `init` is SUPPOSED to light up: the questions
+ * are the work, and an unfilled document that publishes anyway is how a docs
+ * tree fills with placeholder pages nobody reads.
+ *
+ * Two deliberate exemptions:
+ *
+ * - No `docKind` means a folder README (`INDEX_STUBS` in scaffold.ts) — a
+ *   pointer to a folder that fills on demand, so it is meant to stay a stub.
+ * - An `unanswered` reason clears it. "The client never told us the budget"
+ *   is a real answer to a guiding question, and recording it beats the
+ *   alternative this rule exists to prevent: inventing a number that reads
+ *   like fact.
+ */
+function checkUnansweredStub(doc: Doc, findings: Finding[]): void {
+  if (!isStub(doc)) return
+  const docKind = doc.frontmatter.docKind
+  if (docKind === undefined) return
+  if (doc.frontmatter.unanswered !== undefined) return
+  const questions = guidingQuestions(docKind)
+  findings.push({
+    doc: doc.key,
+    rule: 'unanswered-stub',
+    severity: 'warn',
+    message:
+      'This document still asks its guiding questions and answers none of them: ' +
+      `${questions.join(' ')} ` +
+      'Answer them, or set `unanswered: "<why not>"` in the frontmatter to record what is missing. ' +
+      'A deploy is blocked until one of the two is true.',
+  })
+}
+
+/**
+ * The mirror of `unanswered-stub`: a document that grew real content but kept
+ * the excuse in its frontmatter. Left alone, the `unanswered` roster reports
+ * work as blocked long after it landed, which is worse than no roster.
+ */
+function checkStaleUnanswered(doc: Doc, findings: Finding[]): void {
+  if (doc.frontmatter.unanswered === undefined) return
+  if (isStub(doc)) return
+  findings.push({
+    doc: doc.key,
+    rule: 'stale-unanswered',
+    severity: 'warn',
+    message:
+      'This document has real content but still carries `unanswered` in its frontmatter — remove it, ' +
+      'or the unanswered roster keeps reporting finished work as blocked.',
   })
 }
 
@@ -604,6 +692,7 @@ export function checkDocs(docs: Doc[], opts: { strict?: boolean; internalUrl?: s
       checkFlowWithoutDiagram(doc, children, findings)
       checkStepsWithoutDiagram(doc, children, findings)
       checkUndiagrammedDoc(doc, findings)
+      checkStaleNodiagram(doc, findings)
       checkMixedMode(doc, findings)
       checkProseHygiene(doc, findings)
     }
@@ -614,6 +703,8 @@ export function checkDocs(docs: Doc[], opts: { strict?: boolean; internalUrl?: s
     checkClientDocLinksInternal(doc, opts.internalUrl, findings)
     checkTitleMissingDiscriminator(doc, findings)
     checkEmptyStub(doc, findings)
+    checkUnansweredStub(doc, findings)
+    checkStaleUnanswered(doc, findings)
     checkOrphanDoc(doc, findings)
     checkNoOwner(doc, findings)
     checkUnreviewed(doc, findings)
@@ -630,6 +721,9 @@ export interface DocStatusReport {
   noOwner: string[]
   /** Document keys `unreviewed` fired on. */
   overdue: string[]
+  /** Document keys `unanswered-stub` fired on: still asking their guiding
+   * questions, with no reason recorded. These are the ones a deploy refuses. */
+  unanswered: string[]
   /** `missing-core-doc` findings, one per absent core docKind. */
   missingCoreDocs: Finding[]
 }
@@ -647,6 +741,7 @@ export function docStatusReport(docs: Doc[]): DocStatusReport {
     stubs: docs.filter((doc) => isStub(doc)).map((doc) => doc.key),
     noOwner: docs.filter((doc) => !doc.frontmatter.owner).map((doc) => doc.key),
     overdue: findings.filter((f) => f.rule === 'unreviewed').map((f) => f.doc),
+    unanswered: findings.filter((f) => f.rule === 'unanswered-stub').map((f) => f.doc),
     missingCoreDocs: findings.filter((f) => f.rule === 'missing-core-doc'),
   }
 }
@@ -751,5 +846,42 @@ export function writeLlmsTxt(config: Config, docs: Doc[]): string {
   const path = llmsTxtPath(config)
   mkdirSync(dirname(path), { recursive: true })
   writeFileSync(path, buildLlmsTxt(config, docs))
+  return path
+}
+
+/**
+ * Writes this build's own `llms.txt` INTO a site output directory, next to the pages it describes
+ * — Ruling 2: the same `audience` that governed which pages a build wrote governs this index too,
+ * one write producing both halves of the artifact so they can never disagree the way a build and a
+ * separately-run `check --index` could. Links point at the emitted page files (`pageFileFor`), not
+ * the source `.md` paths, since only the pages exist at this location.
+ *
+ * Every builder of a site output directory calls this explicitly — `contrail site` and both
+ * `contrail deploy` build paths (vercel and self-hosted) — rather than `buildSite` writing it
+ * internally: `buildSite` has no dependency on `Config` today (it takes the individual fields it
+ * needs, like `projectName`), and pulling in `Config` just for this build's title fallback
+ * (`llmsTxtTitle`'s `basename(config.root)` case) would be a new coupling for one caller's benefit.
+ * Three call sites sharing one implementation gets the "no future caller can forget" property this
+ * is really after, without that coupling. `llms.txt` is "the only thing an agent has to discover
+ * what documents exist" (`docs/plane-docs-api-spec.md`) — a build that skips this is not usable by
+ * the agent-facing half of this feature at all.
+ *
+ * `baseUrl` is optional and, unlike `contrail site`, every `contrail deploy` call site omits it:
+ * `deploy` never bakes `site.internalUrl`/`clientUrl` into the pages it builds either (no target's
+ * final address is knowable at build time the way it is for the standalone `site` command), so its
+ * copy of `llms.txt` stays relative too, matching the pages it sits beside.
+ */
+export function writeSiteLlmsTxt(
+  config: Config,
+  docs: Doc[],
+  audience: Audience | undefined,
+  outDir: string,
+  baseUrl?: string,
+): string {
+  const path = join(outDir, 'llms.txt')
+  writeFileSync(
+    path,
+    buildLlmsTxt(config, docsForAudience(docs, audience), { linkFor: (doc) => pageFileFor(doc.key), baseUrl }),
+  )
   return path
 }

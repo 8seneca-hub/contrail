@@ -28,6 +28,23 @@ export interface Frontmatter {
   section?: Section
   docKind?: DocKind
   owner?: string
+  /**
+   * Why this document's guiding questions are not answered yet. Set it and
+   * `unanswered-stub` stops firing, so a deploy is no longer blocked — the
+   * escape hatch exists so that "the client never told us" can be recorded
+   * as a fact instead of papered over with invented prose, which is the
+   * failure this whole rule exists to prevent. The reason is the payload:
+   * an empty one is rejected at parse time.
+   */
+  unanswered?: string
+  /**
+   * Why this document carries no diagram. Set it and `undiagrammed-doc` stops
+   * firing. Some documents genuinely have no shape — a glossary is a list of
+   * terms — and a filler diagram on those is worse than none, because it
+   * teaches a reader that the diagrams here are decoration. The reason is the
+   * payload; an empty one is rejected at parse time.
+   */
+  nodiagram?: string
   /** ISO date; feeds a staleness rule later. */
   reviewedOn?: string
   /** Provenance — which client artefact this document's content came from. */

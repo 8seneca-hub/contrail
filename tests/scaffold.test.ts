@@ -3,9 +3,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { main } from '../src/cli.js'
+import { saveConnection } from '../src/auth/credentials.js'
 import { loadConfig } from '../src/config.js'
 import { parseDoc } from '../src/parse.js'
-import { runInitTemplate, scaffoldDoc } from '../src/scaffold.js'
+import { guidingQuestionReportLines, runInitTemplate, scaffoldDoc } from '../src/scaffold.js'
 
 function tmpRoot(): string {
   return mkdtempSync(join(tmpdir(), 'contrail-scaffold-'))
@@ -154,7 +155,10 @@ describe('contrail init --template agency-project (via main)', () => {
     let code: number
     try {
       const spy = vi.spyOn(console, 'log').mockImplementation((msg: string) => logs.push(msg))
-      code = await main(['init', '--template', 'agency-project'])
+      // `--no-plane`: a scaffold-only init must not reach the network, and
+      // without this the result depends on whether whoever runs the suite has
+      // run `contrail login`.
+      code = await main(['init', '--template', 'agency-project', '--no-plane'])
       spy.mockRestore()
     } finally {
       process.chdir(cwd)
@@ -163,6 +167,28 @@ describe('contrail init --template agency-project (via main)', () => {
     expect(code).toBe(0)
     expect(existsSync(join(root, 'docs', '01-overview', 'charter.md'))).toBe(true)
     expect(logs.some((l) => l.includes('created'))).toBe(true)
+  })
+
+  it('--no-plane writes the placeholder config even when a login is saved', async () => {
+    const root = tmpRoot()
+    const cwd = process.cwd()
+    const originalConfigHome = process.env.XDG_CONFIG_HOME
+    process.env.XDG_CONFIG_HOME = tmpRoot()
+    saveConnection({ baseUrl: 'https://plane.test', workspace: 'acme', apiKey: 'saved-key' })
+    process.chdir(root)
+    try {
+      const spy = vi.spyOn(console, 'log').mockImplementation(() => {})
+      expect(await main(['init', '--template', 'agency-project', '--no-plane'])).toBe(0)
+      spy.mockRestore()
+    } finally {
+      process.chdir(cwd)
+      if (originalConfigHome === undefined) delete process.env.XDG_CONFIG_HOME
+      else process.env.XDG_CONFIG_HOME = originalConfigHome
+    }
+
+    const config = readFileSync(join(root, 'contrail.config.ts'), 'utf8')
+    expect(config).toContain('plane.example.com')
+    expect(config).not.toContain('selfhost')
   })
 
   it('rejects an unknown template name', async () => {
@@ -208,5 +234,102 @@ describe('contrail scaffold <docKind> <path> (via main)', () => {
     expect(code).toBe(0)
     const doc = parseDoc(join(root, 'notes.md'), root)
     expect(doc.frontmatter.docKind).toBe('meeting')
+  })
+})
+
+describe('guidingQuestionReportLines', () => {
+  it('lists every created document with a docKind, and its guiding questions verbatim', () => {
+    const lines = guidingQuestionReportLines({
+      created: ['docs/01-overview/business-case.md', 'contrail.config.ts'],
+      skipped: [],
+    })
+    const text = lines.join('\n')
+    expect(text).toContain('docs/01-overview/business-case.md')
+    expect(text).toContain('What is the expected benefit, weighed against the cost?')
+    expect(text).toContain('Who approved the spend?')
+  })
+
+  it('says how to record a question that cannot be answered', () => {
+    const lines = guidingQuestionReportLines({ created: ['docs/04-technical/prd.md'], skipped: [] })
+    expect(lines.join('\n')).toContain('unanswered:')
+  })
+
+  it('puts asking a person AHEAD of marking unanswered, and forbids inventing an answer', () => {
+    const text = guidingQuestionReportLines({ created: ['docs/04-technical/prd.md'], skipped: [] }).join('\n')
+    expect(text).toMatch(/ASK A PERSON/)
+    expect(text).toMatch(/never invent/i)
+    // Ordering is the fix: offering "answer or mark" as equals is what got 23
+    // documents bulk-marked instead of asked about.
+    expect(text.indexOf('ASK A PERSON')).toBeLessThan(text.indexOf('unanswered:'))
+  })
+
+  it('ignores the config and the folder READMEs — neither has questions to answer', () => {
+    const lines = guidingQuestionReportLines({
+      created: ['contrail.config.ts', 'docs/00-meta/project.yml', 'docs/01-overview/intake/README.md'],
+      skipped: [],
+    })
+    expect(lines).toEqual([])
+  })
+
+  it('says nothing at all when a re-run created nothing', () => {
+    expect(guidingQuestionReportLines({ created: [], skipped: ['docs/04-technical/prd.md'] })).toEqual([])
+  })
+})
+
+describe('what an MCP client sees on stdout', () => {
+  it('`init --template` prints the guiding questions, not just the CREATED paths', async () => {
+    const root = tmpRoot()
+    const logs: string[] = []
+    const spy = vi.spyOn(console, 'log').mockImplementation((msg: string) => logs.push(msg))
+    const cwd = process.cwd()
+    process.chdir(root)
+    try {
+      expect(await main(['init', '--template', 'agency-project', '--no-plane', '--project', 'Demo'])).toBe(0)
+    } finally {
+      process.chdir(cwd)
+      spy.mockRestore()
+    }
+    const output = logs.join('\n')
+    expect(output).toContain('CREATED  docs/01-overview/charter.md')
+    // The agent reading this tool result has to be able to see the work.
+    expect(output).toContain('Who sponsors this project, and what problem are they paying to solve?')
+    expect(output).toContain('What is the expected benefit, weighed against the cost?')
+    expect(output).toContain('unanswered:')
+  })
+
+  it('`status` counts the unanswered documents in its health summary, not just per line', async () => {
+    const root = tmpRoot()
+    const cwd = process.cwd()
+    const logs: string[] = []
+    process.chdir(root)
+    const spy = vi.spyOn(console, 'log').mockImplementation((msg: string) => logs.push(msg))
+    try {
+      await main(['init', '--template', 'agency-project', '--no-plane', '--project', 'Demo'])
+      logs.length = 0
+      await main(['status'])
+    } finally {
+      process.chdir(cwd)
+      spy.mockRestore()
+    }
+    expect(logs.join('\n')).toMatch(/Documentation health:.*23 unanswered/)
+  })
+
+  it('`status` flags each unanswered document by name', async () => {
+    const root = tmpRoot()
+    const cwd = process.cwd()
+    const logs: string[] = []
+    process.chdir(root)
+    const spy = vi.spyOn(console, 'log').mockImplementation((msg: string) => logs.push(msg))
+    try {
+      await main(['init', '--template', 'agency-project', '--no-plane', '--project', 'Demo'])
+      logs.length = 0
+      expect(await main(['status'])).toBe(0)
+    } finally {
+      process.chdir(cwd)
+      spy.mockRestore()
+    }
+    const output = logs.join('\n')
+    expect(output).toMatch(/docs\/01-overview\/charter\.md.*unanswered/)
+    expect(output).not.toMatch(/docs\/01-overview\/intake\/README\.md.*unanswered/)
   })
 })

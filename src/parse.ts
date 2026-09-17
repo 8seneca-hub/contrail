@@ -46,6 +46,39 @@ export function parseDoc(absPath: string, root: string): Doc {
     throw new DocError(`${key}: frontmatter \`docKind\` must be one of ${DOC_KINDS.join(', ')}.`)
   }
 
+  // The reason is the whole point of the field: it is what a reader gets
+  // instead of the answer. `unanswered: true` records nothing, so it is
+  // rejected as firmly as a missing title.
+  if (fm.unanswered !== undefined) {
+    if (typeof fm.unanswered !== 'string') {
+      throw new DocError(
+        `${key}: frontmatter \`unanswered\` must be a string saying why the guiding questions ` +
+          'cannot be answered yet.',
+      )
+    }
+    if (fm.unanswered.trim() === '') {
+      throw new DocError(
+        `${key}: frontmatter \`unanswered\` must be a non-empty reason — name what is missing and ` +
+          'who or what it is blocked on.',
+      )
+    }
+  }
+
+  if (fm.nodiagram !== undefined) {
+    if (typeof fm.nodiagram !== 'string') {
+      throw new DocError(
+        `${key}: frontmatter \`nodiagram\` must be a string saying why this document has no ` +
+          'diagram.',
+      )
+    }
+    if (fm.nodiagram.trim() === '') {
+      throw new DocError(
+        `${key}: frontmatter \`nodiagram\` must be a non-empty reason — say what there is no ` +
+          'shape to draw.',
+      )
+    }
+  }
+
   // js-yaml (via gray-matter) auto-parses an unquoted YAML date
   // (`reviewedOn: 2026-09-01`) into a real Date object, not the ISO string
   // the schema promises. Normalize here, once, so every consumer of

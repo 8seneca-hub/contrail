@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
 import { DeployError } from '../deploy.js'
 import type { DeployTransport } from './transport.js'
@@ -23,10 +23,15 @@ import type { DeployTransport } from './transport.js'
  * nobody a half-finished site.
  */
 
+// Every value here must be one the server's manifest validation actually allows (spec §5): the
+// exact set `text/html`, `text/css`, `text/plain`, `text/markdown`, `application/javascript`,
+// `application/json`, plus anything prefixed `image/` or `font/`. One disallowed type 400s the
+// *entire* manifest, not just the file it belongs to — `text/javascript` (a real MIME type, just
+// not the one the server whitelists) was the one entry here that didn't match.
 const CONTENT_TYPES: Record<string, string> = {
   '.html': 'text/html',
   '.css': 'text/css',
-  '.js': 'text/javascript',
+  '.js': 'application/javascript',
   '.json': 'application/json',
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
@@ -111,11 +116,94 @@ function newBuildId(): string {
   return `${stamp}-${Math.random().toString(16).slice(2, 8)}`
 }
 
+const MARKDOWN_LINK = /\]\((https?:\/\/[^\s)]+)\)/gi
+
+/**
+ * `llms.txt` is the only thing an agent has to discover what documents exist and where to fetch
+ * them, so every link in it must actually resolve once this build is pushed to Plane. Plane never
+ * serves docs at an origin root — every path lives under
+ * `/api/v1/workspaces/<slug>/projects/<id>/docs/` (see `endpoint` below) — so there is no absolute
+ * `http(s)` link this codebase can produce that resolves there, *same-origin included*:
+ * `buildLlmsTxt` makes a link absolute by joining `site.internalUrl`/`clientUrl` (an origin, e.g.
+ * `https://projects.8seneca.com`) straight onto the path, never onto that prefix. A link built
+ * that way 404s on Plane whether or not its host happens to match this deploy's — matching the
+ * origin was never sufficient, so this rejects every absolute link, not merely a foreign one.
+ *
+ * Nothing about the push itself would otherwise fail: the upload and commit both succeed, and the
+ * index inside the finished build just links nowhere useful. An agent following it either 404s, or
+ * worse — if the host happens to still serve the old Vercel build — silently reads a stale public
+ * copy of a document that was supposed to come from behind Plane's project membership check.
+ *
+ * Fixing this in `buildLlmsTxt` would be wrong: relative links already resolve correctly under the
+ * docs prefix, because `llms.txt` sits beside the pages it names. This is a guard against a
+ * mis-configured build reaching Plane, not a defect in how the emitter builds links — so it belongs
+ * here, not there.
+ */
+function assertLlmsTxtMatchesOrigin(localDir: string, baseUrl: string): void {
+  const path = join(localDir, 'llms.txt')
+  if (!existsSync(path)) return
+
+  const absolute = [
+    ...new Set(
+      [...readFileSync(path, 'utf8').matchAll(MARKDOWN_LINK)]
+        .map((match) => match[1])
+        .filter((link): link is string => link !== undefined),
+    ),
+  ]
+  if (absolute.length === 0) return
+
+  throw new DeployError(
+    `llms.txt in ${localDir} links ${absolute.length} entr${absolute.length === 1 ? 'y' : 'ies'} with an ` +
+      `absolute URL, first: ${absolute[0]}. Plane serves docs under a workspace/project path prefix, never ` +
+      `at an origin root, so no absolute link resolves there — not even one naming this deploy's own target, ` +
+      `${new URL(baseUrl).origin}, itself. The build was made with site.internalUrl (or clientUrl, for a ` +
+      `client-audience build) set and never rebuilt for Plane. Clear it and rebuild before deploying — ` +
+      `nothing was uploaded and no build was made live.`,
+  )
+}
+
 /**
  * `remotePath` carries the audience (`'internal'` or `'client'`) — for this target there is no
  * filesystem path, because the server owns the layout. `deploy.ts` computes it; see
  * `remotePathFor`.
  */
+/**
+ * Pages that embed a diagram by fetching it, which Plane will refuse to render.
+ *
+ * Plane serves every docs file with `X-Frame-Options: SAMEORIGIN` and
+ * `Content-Security-Policy: frame-ancestors 'self'`, and renders this bundle
+ * inside a `sandbox` WITHOUT `allow-same-origin`. The page therefore sits on an
+ * opaque origin and is never "self", so a nested `<iframe src>` is refused
+ * before it is fetched — the reader gets "localhost refused to connect" where
+ * the diagram should be, with a 200 OK in the server log and nothing in the
+ * build to suggest anything is wrong.
+ *
+ * The emitter inlines diagrams with `srcdoc` precisely to avoid that. This is
+ * the upload-time check that it actually did, because the failure is invisible
+ * everywhere else: the build succeeds, the file uploads, the page renders, and
+ * only the diagram is missing.
+ *
+ * Standalone diagram files under `diagrams/` are skipped — nothing frames them,
+ * they are reachable directly, and an Archify document may legitimately contain
+ * iframes of its own.
+ */
+export function unframeablePages(dir: string): string[] {
+  const offenders: string[] = []
+  for (const file of collectDocsFiles(dir)) {
+    if (!file.path.endsWith('.html')) continue
+    if (file.path.startsWith('diagrams/')) continue
+    const html = readFileSync(join(dir, file.path), 'utf8')
+    for (const tag of html.match(/<iframe\b[^>]*>/g) ?? []) {
+      const src = /\ssrc="([^"]*)"/.exec(tag)?.[1]
+      if (src && /(^|\/)diagrams\//.test(src)) {
+        offenders.push(file.path)
+        break
+      }
+    }
+  }
+  return offenders.sort()
+}
+
 export function createPlaneDocsTransport(opts: PlaneDocsTransportOptions): DeployTransport {
   const baseUrl = opts.baseUrl.replace(/\/+$/, '')
   const fetchFn = opts.fetchFn ?? fetch
@@ -140,6 +228,18 @@ export function createPlaneDocsTransport(opts: PlaneDocsTransportOptions): Deplo
   return {
     name: 'plane',
     async push(localDir, remotePath, pushOpts) {
+      assertLlmsTxtMatchesOrigin(localDir, baseUrl)
+
+      const unframeable = unframeablePages(localDir)
+      if (unframeable.length > 0) {
+        throw new DeployError(
+          `${unframeable.length} page(s) embed a diagram with \`<iframe src>\`, which Plane refuses ` +
+            'to render: it serves docs with `frame-ancestors \'self\'` and frames this bundle on an ' +
+            'opaque origin, so the diagram would show "refused to connect" instead. Diagrams must be ' +
+            `inlined with \`srcdoc\`. Affected: ${unframeable.join(', ')}`,
+        )
+      }
+
       const audience = remotePath
       const files = collectDocsFiles(localDir)
       const bytes = files.reduce((total, file) => total + file.size, 0)

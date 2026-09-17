@@ -120,20 +120,53 @@ describe('steps-without-diagram', () => {
 })
 
 describe('undiagrammed-doc', () => {
-  it('fires on a document over 400 words with no diagram at all', () => {
+  it('fires on a long document with no diagram at all', () => {
     const longBody = Array.from({ length: 420 }, (_, i) => `word${i}`).join(' ')
-    const d = doc(`${FM()}${longBody}\n`)
+    const d = doc(`${FM('docKind: prd\n')}${longBody}\n`)
     expect(findingsFor('undiagrammed-doc', checkDocs([d]))).toHaveLength(1)
   })
 
-  it('stays silent under the word threshold', () => {
-    const d = doc(`${FM()}Just a short paragraph.\n`)
+  it('fires on a SHORT document too — every document earns a diagram, not just the long ones', () => {
+    // The old rule only fired above 400 words, which is how a whole tree of
+    // short documents shipped with no diagram in it anywhere.
+    const d = doc(`${FM('docKind: charter\n')}The operations director sponsors this.\n`)
+    expect(findingsFor('undiagrammed-doc', checkDocs([d]))).toHaveLength(1)
+  })
+
+  it('blocks rather than nags: a document with no diagram is an error', () => {
+    const d = doc(`${FM('docKind: charter\n')}The operations director sponsors this.\n`)
+    expect(findingsFor('undiagrammed-doc', checkDocs([d]))[0]?.severity).toBe('error')
+  })
+
+  it('goes silent when `nodiagram` records why there is nothing to draw', () => {
+    const d = doc(
+      `${FM('docKind: glossary\nnodiagram: "A list of terms has no shape to draw."\n')}TMS means the client\u2019s system.\n`,
+    )
+    expect(findingsFor('undiagrammed-doc', checkDocs([d]))).toHaveLength(0)
+  })
+
+  it('fires in reverse on a diagrammed document still carrying the marker', () => {
+    const d = doc(`${FM('docKind: prd\nnodiagram: "Nothing to draw."\n')}Body prose here.
+
+\`\`\`archify {type=architecture, src=./a.json, summary="The shape of it."}
+\`\`\`
+`)
+    expect(findingsFor('stale-nodiagram', checkDocs([d]))).toHaveLength(1)
+  })
+
+  it('leaves a folder README alone: no docKind means it is a pointer, not a document', () => {
+    const d = doc(`${FM()}Raw client material lands here.\n`, 'README.md')
+    expect(findingsFor('undiagrammed-doc', checkDocs([d]))).toHaveLength(0)
+  })
+
+  it('leaves a stub alone — unanswered-stub already owns that document', () => {
+    const d = doc(`${FM('docKind: charter\n')}# Project Charter\n\n- Who sponsors this?\n`)
     expect(findingsFor('undiagrammed-doc', checkDocs([d]))).toHaveLength(0)
   })
 
   it('stays silent when a diagram exists, regardless of length', () => {
     const longBody = Array.from({ length: 420 }, (_, i) => `word${i}`).join(' ')
-    const d = doc(`${FM()}${longBody}
+    const d = doc(`${FM('docKind: prd\n')}${longBody}
 
 \`\`\`archify {type=architecture, src=./a.json, summary="The shape of it."}
 \`\`\`

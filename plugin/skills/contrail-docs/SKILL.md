@@ -12,6 +12,37 @@ none, or all forty-four. Task types: `feature`, `estimate`, `scope`, `decision`,
 `TASK_DOC_KINDS`, mirrored in `docs/using-contrail.md`. No matching task? Pass keywords instead;
 `contrail context <keywords...>` searches title, summary and tags with no `--task` at all.
 
+## Starting a project: interview, do not guess
+
+`contrail init` scaffolds documents that are nothing but guiding questions. Those questions are the
+work, and the person in the conversation is the only source that can answer most of them.
+
+1. `contrail questions` — the outstanding questions, grouped into rounds a person can answer in one
+   sitting. Put each round to them in your own words. A whole round at a time, not one question at a
+   time and not all sixty-six at once.
+2. Write their answers into the documents that round named, then run `contrail questions` again.
+   Answered documents drop out, so the interview resumes instead of repeating.
+3. `unanswered: "<why not>"` is for what they told you they do not know — not for what you did not
+   ask. A reason that only says the brief was thin means nobody was asked.
+
+**Never invent a figure, a name or a date.** `contrail check` reports `unanswered-stub` on every
+document still asking its questions and `contrail deploy` refuses while any remain, but the gate
+cannot tell an answer from an invention. That part is on you.
+
+## Two artefacts per document, two indexes
+
+Every page ships twice: `.html` for people, `.md` for agents. The HTML index links only `.html`;
+`llms.txt` links only `.md`. A person following the Plane Docs tab never reaches markdown.
+
+There are likewise two `llms.txt`. `docs/llms.txt` lives in the repo with relative `.md` links, for
+an agent reading the checkout — regenerate it with `contrail check --index` and commit it alongside
+the documents. `site/llms.txt` is built with absolute `.html` URLs, for an agent fetching the
+deployed site.
+
+Before deploying, `contrail preview` builds the HTML and prints a `file://` link — give it to the
+person and wait for them to confirm. A deploy refuses if a document changes after that preview, so
+what was confirmed is what ships.
+
 ## Creating a document
 
 `contrail scaffold <docKind> <path>`. Never hand-write frontmatter — it is the one way to get the
@@ -28,6 +59,32 @@ schema, section, and derived title right.
 | `release` | version + date | `<version> — <D Month YYYY>` | v1.2.0 — 20 September 2026 |
 
 Every other `docKind` is a singleton — its kind name alone is title enough.
+
+## Diagrams: Archify, never mermaid
+
+A reader should see the shape of the system, not only read about it. Mermaid flattens to a PNG;
+Archify renders explorable HTML with themes, views and export, and it is what `contrail check`
+asks for.
+
+Write the IR as JSON beside the document, then reference it:
+
+````markdown
+```archify {type=architecture, src=./diagrams/system.architecture.json, summary="How a render request reaches storage."}
+```
+````
+
+- `summary` is mandatory — a missing one is a build error, not a warning.
+- Set `meta.visual_preset` to `signal-flow` in the IR. Omit it and Archify falls back to `classic`,
+  which is what "the diagram looks off" turns out to mean.
+- The IR lives in the repo next to the document; `contrail site` and `contrail deploy` render it.
+- **Every document needs one.** `undiagrammed-doc` is an error, not a warning, and a deploy refuses
+  while any document has neither a diagram nor a reason.
+- Where a document genuinely has no shape — a glossary is a list of terms, an approvals log a set of
+  dates — set `nodiagram: "<why>"`. A filler diagram is worse than none: it teaches a reader that the
+  diagrams here are decoration. Remove the marker when a diagram arrives, or `stale-nodiagram` fires.
+- `0 diagram(s)` in the build output means no document referenced one — a silent miss, not a success.
+- Not installed? Any render prints the install command and the `archify.bin` alternative. It ships as
+  a skill, not an npm package, and installing the skill alone puts no `archify` on PATH.
 
 ## Diagram type
 

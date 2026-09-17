@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -61,7 +61,7 @@ describe('buildSite', () => {
     expect(iframeCount).toBe(2)
 
     // Two copied diagram files under diagrams/
-    const diagramSrcs = [...page.matchAll(/<iframe src="([^"]+)"/g)].map((m) => m[1]!)
+    const diagramSrcs = [...page.matchAll(/data-diagram-src="([^"]+)"/g)].map((m) => m[1]!)
     expect(diagramSrcs).toHaveLength(2)
     for (const src of diagramSrcs) {
       expect(existsSync(join(outDir, src))).toBe(true)
@@ -126,7 +126,7 @@ status: current
     expect(page).toContain('&quot;quoted&quot;')
     // The page HTML must still be well-formed: the escaped iframe title attribute
     // must not break out into a second attribute or tag.
-    expect(page).toMatch(/<iframe src="[^"]+" loading="lazy" title="[^"]*">/)
+    expect(page).toMatch(/<iframe srcdoc="[^"]*" data-diagram-src="[^"]+" loading="lazy" title="[^"]*">/)
   })
 
   it('emits an index.html listing every document with title, summary and status', async () => {
@@ -164,6 +164,21 @@ status: current
     expect(existsSync(join(outDir, 'site.css'))).toBe(true)
     const page = readFileSync(join(outDir, 'doc.html'), 'utf8')
     expect(page).toContain('<link rel="stylesheet" href="site.css">')
+  })
+
+  it('Task 1: reads ?theme from the query string and forwards it to nested diagram iframes', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'contrail-site-theme-'))
+    const doc = writeDoc(root, 'doc.md', `${FRONTMATTER}Body.\n`)
+    const outDir = join(root, 'out')
+    await buildSite({ docs: [doc], outDir, cacheDir: join(root, '.cache') })
+
+    const page = readFileSync(join(outDir, 'doc.html'), 'utf8')
+    const head = /<head>([\s\S]*?)<\/head>/.exec(page)![1]!
+    expect(head).toContain('<script>')
+    expect(head).toContain('URLSearchParams(location.search).get("theme")')
+    expect(head).toContain('document.documentElement.setAttribute("data-theme",t)')
+    // The opaque-origin iframe can't read Plane's theme itself, so the parent forwards it.
+    expect(head).toContain('u.searchParams.set("theme",t)')
   })
 
   it('renders a mermaid diagram as an image and an artifact block as a captioned figure', async () => {
@@ -321,7 +336,7 @@ describe('Fix 5: the site mirrors the source doc tree instead of flattening it',
     expect(resolvedFromBudget).toBe(join(outDir, '04-technical', 'prd.html'))
   })
 
-  it('a diagram embedded two levels deep still resolves its iframe src', async () => {
+  it('a diagram embedded two levels deep still resolves its standalone path', async () => {
     const root = mkdtempSync(join(tmpdir(), 'contrail-site-deep-diagram-'))
     mkdirSync(join(root, 'docs', '03-management', 'decisions'), { recursive: true })
     writeFileSync(join(root, 'docs', '03-management', 'decisions', 'x.workflow.json'), '{"nodes":[]}')
@@ -337,7 +352,7 @@ describe('Fix 5: the site mirrors the source doc tree instead of flattening it',
     await buildSite({ docs: [doc], outDir, cacheDir: join(root, '.cache'), archify: { runner: okArchifyRunner() } })
 
     const page = readFileSync(join(outDir, '03-management', 'decisions', '0001-x.html'), 'utf8')
-    const src = /<iframe src="([^"]+)"/.exec(page)?.[1]
+    const src = /data-diagram-src="([^"]+)"/.exec(page)?.[1]
     expect(src).toBeDefined()
     const resolved = resolve(dirname(join(outDir, '03-management', 'decisions', '0001-x.html')), src!)
     expect(existsSync(resolved)).toBe(true)
@@ -417,5 +432,120 @@ describe('Fix 5: the index groups documents by section', () => {
       expect(page).not.toContain('Meta Notes')
     }
     expect(existsSync(join(outDir, '00-meta', 'index.html'))).toBe(false)
+  })
+})
+
+describe('Task 2: a .md file is emitted alongside every page', () => {
+  it("a build writes <page>.md next to <page>.html with the document's Markdown content, including a nested page", async () => {
+    const root = mkdtempSync(join(tmpdir(), 'contrail-site-md-'))
+    const doc = writeDoc(root, 'doc.md', `${FRONTMATTER}Some **bold** prose.\n`)
+    mkdirSync(join(root, '03-management'), { recursive: true })
+    const nested = writeDoc(root, '03-management/foo.md', `${FRONTMATTER}Nested **prose**.\n`)
+    const outDir = join(root, 'out')
+
+    const result = await buildSite({ docs: [doc, nested], outDir, cacheDir: join(root, '.cache') })
+
+    expect(result.markdownFiles).toBe(2)
+    expect(existsSync(join(outDir, 'doc.html'))).toBe(true)
+    const md = readFileSync(join(outDir, 'doc.md'), 'utf8')
+    expect(md).toContain('Some **bold** prose.')
+
+    // Directory handling: a nested page's .md lands next to its .html at the same nested path.
+    expect(existsSync(join(outDir, '03-management', 'foo.html'))).toBe(true)
+    const nestedMd = readFileSync(join(outDir, '03-management', 'foo.md'), 'utf8')
+    expect(nestedMd).toContain('Nested **prose**.')
+  })
+
+  it('a --audience client build writes no .md at all, even for a client-visible document that links to an excluded one', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'contrail-site-md-audience-'))
+    const clientDoc = writeDoc(
+      root,
+      'brief.md',
+      '---\ntitle: Brief\nsummary: S\nstatus: current\naudience: client\n---\n\nSee the [budget](budget.md) for detail.\n',
+    )
+    const internalDoc = writeDoc(
+      root,
+      'budget.md',
+      '---\ntitle: Budget\nsummary: S\nstatus: current\naudience: internal\n---\n\nInternal only.\n',
+    )
+    const outDir = join(root, 'out')
+
+    const result = await buildSite({
+      docs: [clientDoc, internalDoc],
+      outDir,
+      cacheDir: join(root, '.cache'),
+      audience: 'client',
+    })
+
+    // emitMarkdown does not defang links the way emitSite's transformLinks does (it never
+    // visits `link` nodes), so a client build must write NO .md at all — not merely skip the
+    // excluded document's own .md — or the client-visible brief's raw link to the internal-only
+    // budget document would ship past the HTML defanging the moment this guard is weakened.
+    expect(result.markdownFiles).toBe(0)
+    expect(existsSync(join(outDir, 'brief.md'))).toBe(false)
+    expect(existsSync(join(outDir, 'budget.md'))).toBe(false)
+    expect(existsSync(join(outDir, 'budget.html'))).toBe(false)
+
+    // The HTML side already defangs this link; confirm the fixture actually exercises the leak
+    // scenario the .md gate exists to prevent.
+    const brief = readFileSync(join(outDir, 'brief.html'), 'utf8')
+    expect(brief).not.toContain('budget.md')
+  })
+})
+
+describe('finding 1(b): buildSite cleans its output directory before writing', () => {
+  it('a stale file from a previous build does not survive into the next one', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'contrail-site-clean-'))
+    const outDir = join(root, 'out')
+    mkdirSync(outDir, { recursive: true })
+    writeFileSync(join(outDir, 'stray.html'), '<html>leftover from a previous run</html>')
+    mkdirSync(join(outDir, '03-management'), { recursive: true })
+    writeFileSync(join(outDir, '03-management', 'budget.html'), '<html>a removed document’s old page</html>')
+
+    const doc = writeDoc(root, 'doc.md', `${FRONTMATTER}Just prose.\n`)
+    await buildSite({ docs: [doc], outDir, cacheDir: join(root, '.cache') })
+
+    expect(existsSync(join(outDir, 'stray.html'))).toBe(false)
+    expect(existsSync(join(outDir, '03-management'))).toBe(false)
+    // The new build's own output still lands normally — cleaning is not a no-op that also skips
+    // writing.
+    expect(existsSync(join(outDir, 'doc.html'))).toBe(true)
+  })
+
+  it('a first build into a directory that does not exist yet needs no special case', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'contrail-site-clean-fresh-'))
+    const outDir = join(root, 'brand-new', 'out')
+    const doc = writeDoc(root, 'doc.md', `${FRONTMATTER}Just prose.\n`)
+
+    await expect(buildSite({ docs: [doc], outDir, cacheDir: join(root, '.cache') })).resolves.toBeDefined()
+    expect(existsSync(join(outDir, 'doc.html'))).toBe(true)
+  })
+
+  // Re-review gap: `resolve()` is purely lexical, so a symlinked `outDir` (or one nested under a
+  // symlinked ancestor) sailed past the old string comparison while `rmSync` followed the
+  // symlink anyway and emptied whatever it really pointed at — e.g. a `site` directory that is
+  // actually a symlink to the operator's home directory. `HOME` is overridden to a throwaway
+  // fake directory (never the real one) so `homedir()` names it, then `outDir` is symlinked to
+  // that same fake directory — reproducing "outDir is a symlink to the home directory" without
+  // ever touching a real home directory.
+  it('refuses when outDir is a symlink to the operator\'s home directory, not just a literal path match', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'contrail-site-clean-symlink-'))
+    const fakeHome = mkdtempSync(join(tmpdir(), 'contrail-fake-home-'))
+    writeFileSync(join(fakeHome, 'do-not-delete.txt'), 'precious')
+    const outDir = join(root, 'site')
+    symlinkSync(fakeHome, outDir)
+
+    const originalHome = process.env.HOME
+    process.env.HOME = fakeHome
+    try {
+      const doc = writeDoc(root, 'doc.md', `${FRONTMATTER}Just prose.\n`)
+      await expect(buildSite({ docs: [doc], outDir, cacheDir: join(root, '.cache') })).rejects.toThrow(
+        /Refusing to build into/,
+      )
+    } finally {
+      process.env.HOME = originalHome
+    }
+
+    expect(existsSync(join(fakeHome, 'do-not-delete.txt'))).toBe(true)
   })
 })

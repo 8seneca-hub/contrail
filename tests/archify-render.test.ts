@@ -142,10 +142,19 @@ describe('renderArchify', () => {
     const enoent: ArchifyRunner = vi.fn(async () => {
       throw Object.assign(new Error('spawn archify ENOENT'), { code: 'ENOENT' })
     })
+    // `-g` is REJECTED by the installer ("PromptScript does not support global
+    // skill installation"), so the message must not tell anyone to use it.
     await expect(validateArchify('workflow', ir, { runner: enoent })).rejects.toThrow(
-      /npx skills add tt-a1i\/archify -g/,
+      /npx skills add tt-a1i\/archify(?! -g)/,
     )
     await expect(validateArchify('workflow', ir, { runner: enoent })).rejects.toThrow(/archify\.bin/)
+    // Installing the skill alone leaves no `archify` on PATH — the message has
+    // to name the CLI inside it, or the reader follows the instruction and is
+    // no better off.
+    await expect(validateArchify('workflow', ir, { runner: enoent })).rejects.toThrow(/bin\/archify\.mjs/)
+    // The message may mention `-g` to warn against it; what it must not do is
+    // put it on the command line the reader is told to run.
+    await expect(validateArchify('workflow', ir, { runner: enoent })).rejects.toThrow(/Do not pass `-g`/)
   })
 
   it('leaves a non-ENOENT runner failure untouched', async () => {
@@ -179,7 +188,7 @@ describe('renderArchify', () => {
     const ir = irFile(dir, 'a.workflow.json', '{"a":1}')
     await expect(
       renderArchify('workflow', ir, cache, { bin: '/nonexistent/archify-binary-for-tests' }),
-    ).rejects.toThrow(/npx skills add tt-a1i\/archify -g/)
+    ).rejects.toThrow(/npx skills add tt-a1i\/archify(?! -g)/)
   })
 
   it('leaves a non-ENOENT render failure untouched', async () => {

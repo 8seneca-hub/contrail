@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -133,6 +133,24 @@ describe('contrail deploy', () => {
     await expect(deploy({ config, docs: [doc], audience: 'internal', runner })).rejects.toThrow(/vercel link/)
     expect(readLinkedProject(root)).toBeUndefined()
     expect(calls).toHaveLength(0)
+  })
+
+  // Finding 1(a): `llms.txt` was written only by `contrail site` — a clean `contrail deploy`
+  // uploaded a build with no agent index at all. Every build path must write its own, filtered by
+  // that deploy's own audience.
+  it('writes llms.txt into the build output, filtered by the deploy audience', async () => {
+    const root = fixtureRoot()
+    const internalDoc = writeDoc(root, 'docs/03-management/budget.md')
+    const clientDoc = writeDoc(root, 'docs/01-overview/brief.md', 'audience: client\n')
+    link(root, 'meridian-client')
+    const config = configFor(root, { internalProject: 'meridian-internal', clientProject: 'meridian-client' })
+    const { runner } = fakeRunner()
+
+    await deploy({ config, docs: [internalDoc, clientDoc], audience: 'client', runner })
+
+    const llmsTxt = readFileSync(join(root, 'site', 'llms.txt'), 'utf8')
+    expect(llmsTxt).toContain('01-overview/brief.html')
+    expect(llmsTxt).not.toContain('03-management/budget.html')
   })
 
   it('parseDeployAudience defaults to internal, accepts client, and rejects anything else', () => {

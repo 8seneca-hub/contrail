@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { buildSite } from '../src/emit/site.js'
+import { buildSite, THEME_SCRIPT } from '../src/emit/site.js'
 import { parseDoc } from '../src/parse.js'
 
 function writeAt(root: string, rel: string, frontmatter: string) {
@@ -25,8 +25,11 @@ describe('Task 5: persistent section nav', () => {
       const page = readFileSync(join(outDir, file), 'utf8')
       expect(page).toContain('class="section-nav"')
       expect(page).toContain('aria-label="Documentation sections"')
-      // Requirement 1: works with JavaScript disabled — plain links, no script at all.
-      expect(page).not.toContain('<script')
+      // Requirement 1: works with JavaScript disabled — the page's only script is Task 1's theme
+      // bridge, which just sets data-theme and forwards ?theme to iframes. No content depends on it.
+      const scriptOccurrences = page.match(/<script/g) ?? []
+      expect(scriptOccurrences).toHaveLength(1)
+      expect(page).toContain(THEME_SCRIPT)
     }
   })
 
@@ -95,14 +98,18 @@ describe('Task 5: persistent section nav', () => {
     }
   })
 
-  it('the index renders without JS: no <script> tag anywhere, and every nav entry is a plain <a>', async () => {
+  it('the index has no script beyond the Task 1 theme bridge, and every nav entry is a plain <a>', async () => {
     const root = mkdtempSync(join(tmpdir(), 'contrail-nav-nojs-'))
     const overview = writeAt(root, 'docs/01-overview/brief.md', FM())
     const outDir = join(root, 'out')
     await buildSite({ docs: [overview], outDir, cacheDir: join(root, '.cache') })
 
     const index = readFileSync(join(outDir, 'index.html'), 'utf8')
-    expect(index).not.toContain('<script')
+    // Requirement 1: works with JavaScript disabled — the only script on the page is Task 1's
+    // theme bridge; no content depends on JS running.
+    const scriptOccurrences = index.match(/<script/g) ?? []
+    expect(scriptOccurrences).toHaveLength(1)
+    expect(index).toContain(THEME_SCRIPT)
     expect(index).not.toContain('role="tab"')
     expect(index).not.toContain('role="tablist"')
   })

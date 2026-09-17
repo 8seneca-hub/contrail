@@ -116,7 +116,10 @@ describe('loadConfig', () => {
       },
     }))
     const cfg = loadConfig(join(root, 'contrail.config.json'))
-    expect(cfg.selfhost?.slug).toBe('meridian')
+    // `selfhost` is `SelfhostPlane | SelfhostRailway`; narrow on `target` rather than widening
+    // the union or casting — only `SelfhostRailway` carries `slug`.
+    if (cfg.selfhost?.target !== 'railway') throw new Error('expected a railway selfhost config')
+    expect(cfg.selfhost.slug).toBe('meridian')
   })
 
   it('accepts a plane selfhost config, which needs only a projectId', () => {

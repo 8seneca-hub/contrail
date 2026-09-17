@@ -20,6 +20,7 @@ import { loadConfig } from '../src/config.js'
 import { docsForAudience } from '../src/emit/site.js'
 import { hashContent, loadLock } from '../src/lock.js'
 import { parseDoc } from '../src/parse.js'
+import { renderDocFile } from '../src/scaffold.js'
 import type { PlaneApi } from '../src/plane/client.js'
 import type { PublishResult } from '../src/plane/publish.js'
 import type { Config, Lock } from '../src/types.js'
@@ -445,6 +446,17 @@ describe('siteOutDirFor', () => {
 
   it('leaves an absolute --out untouched', () => {
     expect(siteOutDirFor(config, '/tmp/out')).toBe('/tmp/out')
+  })
+
+  // `buildSite` now clears its output directory before every build (finding 1(b)) — an `--out`
+  // that resolves to the project root itself must never reach it, or a build would erase
+  // contrail.config.ts and docs/ along with whatever it thought was "the previous build".
+  it('refuses an --out that resolves to config.root itself', () => {
+    expect(() => siteOutDirFor(config, '.')).toThrow(/project root/)
+  })
+
+  it('refuses an --out that resolves to config.root itself via an absolute path', () => {
+    expect(() => siteOutDirFor(config, '/workspace')).toThrow(/project root/)
   })
 })
 
@@ -875,6 +887,66 @@ describe('contrail deploy (CLI wiring)', () => {
       spy.mockRestore()
     }
     expect(logs.join('\n')).toContain("Unknown --audience 'bogus'")
+  })
+
+  it('refuses before anything else when a document leaves its guiding questions unanswered', async () => {
+    const root = setupWorkspace()
+    writeFileSync(join(root, 'docs', 'business-case.md'), renderDocFile('business-case'))
+    const logs: string[] = []
+    const spy = vi.spyOn(console, 'error').mockImplementation((msg: string) => logs.push(msg))
+    const cwd = process.cwd()
+    process.chdir(root)
+    try {
+      expect(await main(['deploy'])).toBe(1)
+    } finally {
+      process.chdir(cwd)
+      spy.mockRestore()
+    }
+    const output = logs.join('\n')
+    expect(output).toContain('business-case.md')
+    expect(output).toMatch(/unanswered/i)
+    // The gate must come FIRST: reaching the vercel-link guard would mean an
+    // unanswered tree got further into a deploy than it should.
+    expect(output).not.toContain('vercel link')
+  })
+
+  it('lets `unanswered` through the gate — a recorded reason is an answer', async () => {
+    const root = setupWorkspace()
+    writeFileSync(
+      join(root, 'docs', 'business-case.md'),
+      renderDocFile('business-case').replace(
+        'status: draft',
+        'status: draft\nunanswered: "The client has named no budget or approver yet."',
+      ),
+    )
+    const logs: string[] = []
+    const spy = vi.spyOn(console, 'error').mockImplementation((msg: string) => logs.push(msg))
+    const cwd = process.cwd()
+    process.chdir(root)
+    try {
+      await main(['deploy'])
+    } finally {
+      process.chdir(cwd)
+      spy.mockRestore()
+    }
+    expect(logs.join('\n')).not.toMatch(/unanswered/i)
+  })
+
+  it('--force overrides the gate for someone who has decided to publish anyway', async () => {
+    const root = setupWorkspace()
+    writeFileSync(join(root, 'docs', 'business-case.md'), renderDocFile('business-case'))
+    const logs: string[] = []
+    const spy = vi.spyOn(console, 'error').mockImplementation((msg: string) => logs.push(msg))
+    const cwd = process.cwd()
+    process.chdir(root)
+    try {
+      await main(['deploy', '--force'])
+    } finally {
+      process.chdir(cwd)
+      spy.mockRestore()
+    }
+    // Past the gate, so it falls through to the pre-existing vercel guard.
+    expect(logs.join('\n')).toContain('vercel link')
   })
 
   it('a project mismatch aborts naming both projects, without shelling out to vercel', async () => {

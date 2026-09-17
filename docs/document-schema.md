@@ -71,6 +71,8 @@ docKind: charter | business-case | stakeholders | domain-research | glossary |
          architecture | api-reference | prototype-registry |
          test-plan | qa-report | deployment | release | acceptance | closure
 owner: string                          # optional — a name, not a system id
+unanswered: string                     # optional — why the guiding questions have no answer yet
+nodiagram: string                      # optional — why this document has no diagram
 reviewedOn: string (ISO date)          # optional — quote it (see note below)
 sources: string[]                      # optional — provenance: which client artefact this came from
 repos: string[]                        # optional
