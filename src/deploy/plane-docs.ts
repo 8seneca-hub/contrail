@@ -167,6 +167,43 @@ function assertLlmsTxtMatchesOrigin(localDir: string, baseUrl: string): void {
  * filesystem path, because the server owns the layout. `deploy.ts` computes it; see
  * `remotePathFor`.
  */
+/**
+ * Pages that embed a diagram by fetching it, which Plane will refuse to render.
+ *
+ * Plane serves every docs file with `X-Frame-Options: SAMEORIGIN` and
+ * `Content-Security-Policy: frame-ancestors 'self'`, and renders this bundle
+ * inside a `sandbox` WITHOUT `allow-same-origin`. The page therefore sits on an
+ * opaque origin and is never "self", so a nested `<iframe src>` is refused
+ * before it is fetched — the reader gets "localhost refused to connect" where
+ * the diagram should be, with a 200 OK in the server log and nothing in the
+ * build to suggest anything is wrong.
+ *
+ * The emitter inlines diagrams with `srcdoc` precisely to avoid that. This is
+ * the upload-time check that it actually did, because the failure is invisible
+ * everywhere else: the build succeeds, the file uploads, the page renders, and
+ * only the diagram is missing.
+ *
+ * Standalone diagram files under `diagrams/` are skipped — nothing frames them,
+ * they are reachable directly, and an Archify document may legitimately contain
+ * iframes of its own.
+ */
+export function unframeablePages(dir: string): string[] {
+  const offenders: string[] = []
+  for (const file of collectDocsFiles(dir)) {
+    if (!file.path.endsWith('.html')) continue
+    if (file.path.startsWith('diagrams/')) continue
+    const html = readFileSync(join(dir, file.path), 'utf8')
+    for (const tag of html.match(/<iframe\b[^>]*>/g) ?? []) {
+      const src = /\ssrc="([^"]*)"/.exec(tag)?.[1]
+      if (src && /(^|\/)diagrams\//.test(src)) {
+        offenders.push(file.path)
+        break
+      }
+    }
+  }
+  return offenders.sort()
+}
+
 export function createPlaneDocsTransport(opts: PlaneDocsTransportOptions): DeployTransport {
   const baseUrl = opts.baseUrl.replace(/\/+$/, '')
   const fetchFn = opts.fetchFn ?? fetch
@@ -192,6 +229,16 @@ export function createPlaneDocsTransport(opts: PlaneDocsTransportOptions): Deplo
     name: 'plane',
     async push(localDir, remotePath, pushOpts) {
       assertLlmsTxtMatchesOrigin(localDir, baseUrl)
+
+      const unframeable = unframeablePages(localDir)
+      if (unframeable.length > 0) {
+        throw new DeployError(
+          `${unframeable.length} page(s) embed a diagram with \`<iframe src>\`, which Plane refuses ` +
+            'to render: it serves docs with `frame-ancestors \'self\'` and frames this bundle on an ' +
+            'opaque origin, so the diagram would show "refused to connect" instead. Diagrams must be ' +
+            `inlined with \`srcdoc\`. Affected: ${unframeable.join(', ')}`,
+        )
+      }
 
       const audience = remotePath
       const files = collectDocsFiles(localDir)

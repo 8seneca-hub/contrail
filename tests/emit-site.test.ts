@@ -61,7 +61,7 @@ describe('buildSite', () => {
     expect(iframeCount).toBe(2)
 
     // Two copied diagram files under diagrams/
-    const diagramSrcs = [...page.matchAll(/<iframe src="([^"]+)"/g)].map((m) => m[1]!)
+    const diagramSrcs = [...page.matchAll(/data-diagram-src="([^"]+)"/g)].map((m) => m[1]!)
     expect(diagramSrcs).toHaveLength(2)
     for (const src of diagramSrcs) {
       expect(existsSync(join(outDir, src))).toBe(true)
@@ -126,7 +126,7 @@ status: current
     expect(page).toContain('&quot;quoted&quot;')
     // The page HTML must still be well-formed: the escaped iframe title attribute
     // must not break out into a second attribute or tag.
-    expect(page).toMatch(/<iframe src="[^"]+" loading="lazy" title="[^"]*">/)
+    expect(page).toMatch(/<iframe srcdoc="[^"]*" data-diagram-src="[^"]+" loading="lazy" title="[^"]*">/)
   })
 
   it('emits an index.html listing every document with title, summary and status', async () => {
@@ -336,7 +336,7 @@ describe('Fix 5: the site mirrors the source doc tree instead of flattening it',
     expect(resolvedFromBudget).toBe(join(outDir, '04-technical', 'prd.html'))
   })
 
-  it('a diagram embedded two levels deep still resolves its iframe src', async () => {
+  it('a diagram embedded two levels deep still resolves its standalone path', async () => {
     const root = mkdtempSync(join(tmpdir(), 'contrail-site-deep-diagram-'))
     mkdirSync(join(root, 'docs', '03-management', 'decisions'), { recursive: true })
     writeFileSync(join(root, 'docs', '03-management', 'decisions', 'x.workflow.json'), '{"nodes":[]}')
@@ -352,7 +352,7 @@ describe('Fix 5: the site mirrors the source doc tree instead of flattening it',
     await buildSite({ docs: [doc], outDir, cacheDir: join(root, '.cache'), archify: { runner: okArchifyRunner() } })
 
     const page = readFileSync(join(outDir, '03-management', 'decisions', '0001-x.html'), 'utf8')
-    const src = /<iframe src="([^"]+)"/.exec(page)?.[1]
+    const src = /data-diagram-src="([^"]+)"/.exec(page)?.[1]
     expect(src).toBeDefined()
     const resolved = resolve(dirname(join(outDir, '03-management', 'decisions', '0001-x.html')), src!)
     expect(existsSync(resolved)).toBe(true)

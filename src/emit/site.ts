@@ -1,4 +1,13 @@
-import { copyFileSync, existsSync, mkdirSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, extname, join, posix, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -25,6 +34,18 @@ const SITE_CSS_PATH = fileURLToPath(new URL('../../templates/site.css', import.m
 export interface SiteEmitContext {
   /** `DiagramPlan.irPath` (absolute) -> path relative to the site root, e.g. "diagrams/<hash>.html". */
   diagramPaths: Record<string, string>
+  /**
+   * `DiagramPlan.irPath` (absolute) -> the rendered diagram's own HTML, inlined
+   * into the page rather than fetched.
+   *
+   * Plane serves every docs file with `X-Frame-Options: SAMEORIGIN` and
+   * `frame-ancestors 'self'`, and renders this bundle inside a `sandbox`
+   * WITHOUT `allow-same-origin` — so the page sits on an opaque origin and is
+   * never "self". A nested `<iframe src>` is therefore refused by the browser
+   * before it is fetched. `srcdoc` never touches the network, so both headers
+   * are satisfied and the diagram keeps its own isolated origin.
+   */
+  diagramHtml: Record<string, string>
   /** `AssetPlan.id` -> path relative to the site root, e.g. "assets/<hash>.png". */
   assetPaths: Record<string, string>
   /**
@@ -141,11 +162,15 @@ function relativeHref(fromPageFile: string, toPageFile: string): string {
   return posix.relative(posix.dirname(fromPageFile), toPageFile)
 }
 
-function figureForDiagram(path: string, summary: string): string {
+function figureForDiagram(path: string, summary: string, html: string): string {
   const safeSummary = escapeHtml(summary)
+  // `data-diagram-src` keeps the standalone file addressable — for a direct
+  // link, and for the theme bridge — without making the page depend on
+  // fetching it. See `diagramHtml` on SiteEmitContext for why it cannot.
   return (
     '<figure class="diagram">' +
-    `<iframe src="${escapeHtml(path)}" loading="lazy" title="${safeSummary}"></iframe>` +
+    `<iframe srcdoc="${escapeHtml(html)}" data-diagram-src="${escapeHtml(path)}" ` +
+    `loading="lazy" title="${safeSummary}"></iframe>` +
     `<figcaption>${safeSummary}</figcaption>` +
     '</figure>'
   )
@@ -220,7 +245,7 @@ function transformCodeBlocks(doc: Doc, tree: Root, ctx: SiteEmitContext, rootPre
       const irPath = resolve(dirname(doc.absPath), meta.src)
       const path = ctx.diagramPaths[irPath]
       if (!path) throw new Error(`${where}: no rendered diagram found for ${meta.src}`)
-      markup = figureForDiagram(rootPrefix + path, meta.summary)
+      markup = figureForDiagram(rootPrefix + path, meta.summary, ctx.diagramHtml[irPath] ?? '')
     } else if (node.lang === 'mermaid') {
       const id = assetIdForDiagram(node.value)
       const path = ctx.assetPaths[id]
@@ -633,7 +658,11 @@ addEventListener("DOMContentLoaded",function(){
 document.querySelectorAll("iframe[src]").forEach(function(f){
 var u=new URL(f.getAttribute("src"),location.href);
 u.searchParams.set("theme",t);
-f.setAttribute("src",u.pathname+u.search);});});})();</script>`
+f.setAttribute("src",u.pathname+u.search);});
+document.querySelectorAll("iframe[srcdoc]").forEach(function(f){
+var d=f.getAttribute("srcdoc");
+if(d.indexOf("data-theme")===-1)return;
+f.setAttribute("srcdoc",d.replace(/data-theme="[^"]*"/,'data-theme="'+t+'"'));});});})();</script>`
 
 function pageShell(title: string, body: string, rootPrefix: string, canonicalUrl?: string): string {
   const canonicalTag = canonicalUrl ? `\n<link rel="canonical" href="${escapeHtml(canonicalUrl)}">` : ''
@@ -949,6 +978,7 @@ export async function buildSite(args: {
   copyFileSync(SITE_CSS_PATH, join(outDir, 'site.css'))
 
   const diagramPaths: Record<string, string> = {}
+  const diagramHtml: Record<string, string> = {}
   const assetPaths: Record<string, string> = {}
   let diagramCount = 0
 
@@ -961,6 +991,9 @@ export async function buildSite(args: {
         const rel = `diagrams/${plan.hash}.html`
         copyFileSync(plan.htmlPath, join(outDir, rel))
         diagramPaths[plan.irPath] = rel
+        // Still written as a file so it can be opened on its own; the page
+        // inlines this copy rather than pointing at it.
+        diagramHtml[plan.irPath] = readFileSync(plan.htmlPath, 'utf8')
         diagramCount++
       }
     }
@@ -979,6 +1012,7 @@ export async function buildSite(args: {
   const tree = buildSiteTree(emitted)
   const ctx: SiteEmitContext = {
     diagramPaths,
+    diagramHtml,
     assetPaths,
     docs: docPages,
     filtered: audience !== undefined,
