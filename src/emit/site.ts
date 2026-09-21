@@ -195,7 +195,15 @@ function figureForRawFile(file: RawFile, summary: string, rootPrefix: string): s
   const name = file.sourceRel.split('/').pop() ?? file.sourceRel
   return (
     '<figure class="file">' +
-    `<a class="file-link" href="${escapeHtml(rawFileHref(file, rootPrefix))}" download>` +
+    // `target="_blank"` is load-bearing, not decoration. Plane frames this bundle in
+    // `<iframe sandbox="allow-scripts allow-popups">`; a sandbox without `allow-downloads`
+    // blocks the download and lets the click fall through as a navigation, so the frame
+    // replaces the whole Docs tab with the file - or, when the server never stored it, with
+    // a 404 and no way back. Opening a new tab keeps the reader's place either way, and
+    // `allow-popups` is already granted. `rel="noopener"` because the new tab is untrusted
+    // ground by default.
+    `<a class="file-link" href="${escapeHtml(rawFileHref(file, rootPrefix))}" download ` +
+    'target="_blank" rel="noopener">' +
     `${escapeHtml(name)}<span class="file-size">${escapeHtml(humanSize(file.size))}</span></a>` +
     `<figcaption>${escapeHtml(summary)}</figcaption>` +
     '</figure>'
