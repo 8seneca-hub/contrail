@@ -524,6 +524,7 @@ export async function main(argv: string[]): Promise<number> {
         workspace: config.plane.workspace,
         projectId: config.selfhost.projectId,
         apiKey: requireApiKey(),
+        allowedTypes: config.plane.allowedTypes,
       })
     }
 

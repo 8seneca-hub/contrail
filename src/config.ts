@@ -31,6 +31,12 @@ export function loadConfig(configPath: string): Config {
 
   if (!raw.plane?.baseUrl) throw new ConfigError(`${configPath}: \`plane.baseUrl\` is required.`)
   if (!raw.plane?.workspace) throw new ConfigError(`${configPath}: \`plane.workspace\` is required.`)
+  if (raw.plane.allowedTypes !== undefined) {
+    const types = raw.plane.allowedTypes as unknown
+    if (!Array.isArray(types) || types.some((type) => typeof type !== 'string' || type.length === 0)) {
+      throw new ConfigError(`${configPath}: \`plane.allowedTypes\` must be an array of content-type strings.`)
+    }
+  }
   if (!Array.isArray(raw.docs) || raw.docs.length === 0) {
     throw new ConfigError(`${configPath}: \`docs\` must be a non-empty array of globs.`)
   }
@@ -143,6 +149,7 @@ export function loadConfig(configPath: string): Config {
       baseUrl: raw.plane.baseUrl.replace(/\/+$/, ''),
       workspace: raw.plane.workspace,
       collection: raw.plane.collection,
+      allowedTypes: raw.plane.allowedTypes,
     },
     repos,
     docs: raw.docs,

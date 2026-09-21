@@ -39,4 +39,12 @@ describe('unservableFiles', () => {
     const dir = buildDir(['files/a.xlsx', 'files/b.pdf', 'files/c.docx', 'index.html'])
     expect(unservableFiles(dir)).toEqual(['files/a.xlsx', 'files/b.pdf', 'files/c.docx'].sort())
   })
+
+  it('clears a type once the server has been widened to accept it', () => {
+    // `plane.allowedTypes` is how a widened server is declared. Only the named type clears —
+    // a server that took spreadsheets did not thereby agree to take PDFs.
+    const dir = buildDir(['index.html', 'files/a.xlsx', 'files/b.pdf'])
+    const spreadsheet = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    expect(unservableFiles(dir, [spreadsheet])).toEqual(['files/b.pdf'])
+  })
 })
