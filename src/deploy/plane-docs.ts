@@ -72,8 +72,13 @@ const SERVER_ALLOWED_TYPES = new Set([
   'application/json',
 ])
 
-function serverWillServe(type: string): boolean {
-  return SERVER_ALLOWED_TYPES.has(type) || type.startsWith('image/') || type.startsWith('font/')
+function serverWillServe(type: string, extra: ReadonlySet<string> = new Set()): boolean {
+  return (
+    SERVER_ALLOWED_TYPES.has(type) ||
+    extra.has(type) ||
+    type.startsWith('image/') ||
+    type.startsWith('font/')
+  )
 }
 
 /**
@@ -81,10 +86,14 @@ function serverWillServe(type: string): boolean {
  * reject. Named up front because the failure is all-or-nothing: one disallowed
  * entry 400s the entire manifest, so a single attachment takes the whole
  * publish with it and the error says nothing about which file caused it.
+ *
+ * `allowedTypes` names what this deployment's server accepts beyond the built-in
+ * set, so a widened server can be told about without editing this file.
  */
-export function unservableFiles(dir: string): string[] {
+export function unservableFiles(dir: string, allowedTypes: readonly string[] = []): string[] {
+  const extra = new Set(allowedTypes)
   return collectDocsFiles(dir)
-    .filter((file) => !serverWillServe(contentTypeFor(file.path)))
+    .filter((file) => !serverWillServe(contentTypeFor(file.path), extra))
     .map((file) => file.path)
     .sort()
 }
@@ -155,6 +164,14 @@ export interface PlaneDocsTransportOptions {
   /** Files uploaded at once. Sequential uploads are slow for the 800KB diagram bundles; the
    * server does no work per file, so the ceiling here is the network. */
   concurrency?: number
+  /**
+   * Content types this deployment's docs endpoint accepts beyond the built-in set — the escape
+   * hatch for a server widened ahead of this client. Set it from `plane.allowedTypes` in
+   * contrail.config.ts once the server's manifest validation (spec §5) actually accepts the type:
+   * claiming one it still rejects turns a clean local skip into a 400 that takes the whole
+   * manifest with it.
+   */
+  allowedTypes?: string[]
 }
 
 function newBuildId(): string {
@@ -276,13 +293,16 @@ export function createPlaneDocsTransport(opts: PlaneDocsTransportOptions): Deplo
     async push(localDir, remotePath, pushOpts) {
       assertLlmsTxtMatchesOrigin(localDir, baseUrl)
 
-      const unservable = unservableFiles(localDir)
-      if (unservable.length > 0) {
-        throw new DeployError(
-          `${unservable.length} file(s) have a content type the docs endpoint does not accept, and ` +
-            'one rejected entry fails the whole manifest rather than just itself. Allow these types ' +
-            "in the server's manifest validation (spec §5) and widen `SERVER_ALLOWED_TYPES` in " +
-            `src/deploy/plane-docs.ts to match. Affected: ${unservable.join(', ')}`,
+      // One rejected entry 400s the whole manifest, so anything the endpoint will not store is
+      // left out of this build rather than allowed to take the publish down with it. The pages
+      // still ship; a link to a skipped file 404s until the server's manifest validation (spec §5)
+      // is widened and `plane.allowedTypes` names the type.
+      const unservable = new Set(unservableFiles(localDir, opts.allowedTypes))
+      if (unservable.size > 0) {
+        console.warn(
+          `Skipping ${unservable.size} attachment(s) the docs endpoint does not accept. The pages ` +
+            'deploy without them and any link to one will 404 until the server accepts the type: ' +
+            `${[...unservable].join(', ')}`,
         )
       }
 
@@ -297,7 +317,7 @@ export function createPlaneDocsTransport(opts: PlaneDocsTransportOptions): Deplo
       }
 
       const audience = remotePath
-      const files = collectDocsFiles(localDir)
+      const files = collectDocsFiles(localDir).filter((file) => !unservable.has(file.path))
       const bytes = files.reduce((total, file) => total + file.size, 0)
       const buildId = opts.buildId ?? newBuildId()
 

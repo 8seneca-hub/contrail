@@ -77,7 +77,18 @@ export interface Doc {
 export interface Config {
   /** Directory containing the config file. All doc globs resolve against it. */
   root: string
-  plane: { baseUrl: string; workspace: string; collection?: string }
+  plane: {
+    baseUrl: string
+    workspace: string
+    collection?: string
+    /**
+     * Content types this Plane's docs endpoint accepts beyond contrail's built-in set. Only add a
+     * type once the server's manifest validation actually stores it — until then the deploy skips
+     * files of that type and says so, which is recoverable; claiming it early turns that into a
+     * 400 that takes the whole manifest down.
+     */
+    allowedTypes?: string[]
+  }
   repos: Record<string, string>
   docs: string[]
   /**
