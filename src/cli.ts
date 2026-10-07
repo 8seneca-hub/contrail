@@ -13,6 +13,7 @@ import { createRailwayTransport } from './deploy/railway.js'
 import { createPlaneDocsTransport } from './deploy/plane-docs.js'
 import type { DeployTransport } from './deploy/transport.js'
 import { buildSite, docsForAudience } from './emit/site.js'
+import { greet } from './greet.js'
 import { loadLock, saveLock } from './lock.js'
 import { parseDoc } from './parse.js'
 import { previewDrift, writePreviewManifest } from './preview.js'
@@ -338,7 +339,8 @@ export async function main(argv: string[]): Promise<number> {
         'site [--out <dir>] [--audience client] | check [--strict] [--index] [--audience client] [--json] | ' +
         'scaffold <docKind> <path> [--json] | sheet pull <doc> | sheet push <doc> [--force] | ' +
         'deploy [--audience client|internal] [--target vercel|plane|railway] [--prod] [--dry-run] [--yes] | ' +
-        `context [--task <${TASK_TYPES.join('|')}>] [keywords...] [--audience client] [--json] [--limit <n>]`,
+        `context [--task <${TASK_TYPES.join('|')}>] [keywords...] [--audience client] [--json] [--limit <n>] | ` +
+        'greet <name>',
     )
     return 0
   }
@@ -421,6 +423,16 @@ export async function main(argv: string[]): Promise<number> {
       console.log(`Plane project  ${plane.projectId}`)
       console.log(`Docs tab       ${plane.baseUrl}/${plane.workspace}/projects/${plane.projectId}/docs/`)
     }
+    return 0
+  }
+
+  if (command === 'greet') {
+    const name = positionals[1]
+    if (!name) {
+      console.error('Usage: contrail greet <name>')
+      return 2
+    }
+    console.log(greet(name))
     return 0
   }
 
