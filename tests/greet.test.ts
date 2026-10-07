@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { greet } from '../src/greet.js'
+import { main } from '../src/cli.js'
 
 describe('greet', () => {
   it('greets a name', () => {
