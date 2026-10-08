@@ -13,6 +13,7 @@ import { createRailwayTransport } from './deploy/railway.js'
 import { createPlaneDocsTransport } from './deploy/plane-docs.js'
 import type { DeployTransport } from './deploy/transport.js'
 import { buildSite, docsForAudience } from './emit/site.js'
+import { greet } from './greet.js'
 import { loadLock, saveLock } from './lock.js'
 import { parseDoc } from './parse.js'
 import { previewDrift, writePreviewManifest } from './preview.js'
@@ -336,7 +337,7 @@ export async function main(argv: string[]): Promise<number> {
         'build | status [--json] | questions [--json] | preview [--out <dir>] [--audience client] | ' +
         'publish [--dry-run] [--force] [--only <substring>] [--audience client] | ' +
         'site [--out <dir>] [--audience client] | check [--strict] [--index] [--audience client] [--json] | ' +
-        'scaffold <docKind> <path> [--json] | sheet pull <doc> | sheet push <doc> [--force] | ' +
+        'scaffold <docKind> <path> [--json] | greet <name> | sheet pull <doc> | sheet push <doc> [--force] | ' +
         'deploy [--audience client|internal] [--target vercel|plane|railway] [--prod] [--dry-run] [--yes] | ' +
         `context [--task <${TASK_TYPES.join('|')}>] [keywords...] [--audience client] [--json] [--limit <n>]`,
     )
@@ -443,6 +444,16 @@ export async function main(argv: string[]): Promise<number> {
       else console.error(message)
       return 1
     }
+  }
+
+  if (command === 'greet') {
+    const [, name] = positionals
+    if (name === undefined) {
+      console.error('Usage: contrail greet <name>')
+      return 2
+    }
+    console.log(greet(name))
+    return 0
   }
 
   if (command === 'deploy') {
