@@ -838,6 +838,35 @@ describe('sheet command (via main)', () => {
   })
 })
 
+describe('greet command (via main)', () => {
+  it('prints the greeting and exits 0', async () => {
+    const logs: string[] = []
+    const spy = vi.spyOn(console, 'log').mockImplementation((msg: string) => logs.push(msg))
+    const code = await main(['greet', 'Ada'])
+    spy.mockRestore()
+    expect(code).toBe(0)
+    expect(logs.join('\n')).toBe('Hello, Ada!')
+  })
+
+  it('prints usage to stderr and exits 2 when the name is missing', async () => {
+    const logs: string[] = []
+    const spy = vi.spyOn(console, 'error').mockImplementation((msg: string) => logs.push(msg))
+    const code = await main(['greet'])
+    spy.mockRestore()
+    expect(code).toBe(2)
+    expect(logs.join('\n')).toBe('Usage: contrail greet <name>')
+  })
+
+  it('help text lists the greet command', async () => {
+    const logs: string[] = []
+    const spy = vi.spyOn(console, 'log').mockImplementation((msg: string) => logs.push(msg))
+    const code = await main(['help'])
+    spy.mockRestore()
+    expect(code).toBe(0)
+    expect(logs.join('\n')).toContain('greet <name>')
+  })
+})
+
 describe('contrail deploy (CLI wiring)', () => {
   function setupWorkspace() {
     const root = mkdtempSync(join(tmpdir(), 'contrail-deploy-cli-'))

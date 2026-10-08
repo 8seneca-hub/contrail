@@ -61,6 +61,7 @@ contrail init --template agency-project   # five-section tree, never overwrites
 contrail scaffold adr docs/03-management/decisions/0007-use-postgres.md
 contrail check --index                    # lint + regenerate docs/llms.txt
 contrail site --out site
+contrail greet Ada
 ```
 
 See [`docs/using-contrail.md`](docs/using-contrail.md) for the full workflow, and
