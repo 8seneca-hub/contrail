@@ -1,0 +1,7 @@
+# CTR-13 — ledger
+
+## Subtask 1: `src/greet.ts` — done
+Summary: Added `src/greet.ts` exporting `greet(name: string): string`, which returns `` `Hello, ${name}!` `` by plain interpolation. This is the implementation half of CTR-13; the test half is subtask 2 and was not started. No input validation, no trimming, no empty-string fallback — matching the spec's contract exactly.
+Decisions: Wrote the file byte-for-byte as the plan's code block gives it, rather than paraphrasing: the plan and the spec's contract table agree on every case, so there was nothing to reconcile. Followed house style observed in `src/lock.ts` (no semicolons, single quotes, 2-space indent). Installed dependencies with `npm ci` to run the plan's verification — `node_modules/` is gitignored and no dependency was added or changed. `npm ci` needed `--cache /tmp/npm-cache-895ae7` because the default cache under `HOME=/root` is root-owned and unwritable by this user.
+Open issues: None for this subtask. Two notes carrying forward: (1) the ticket text says the test goes in `src/greet.test.ts`, but `vitest.config.ts` collects only `tests/**/*.test.ts` and the spec therefore puts it at `tests/greet.test.ts` — the spec wins, and subtask 2 must use `tests/`; (2) `npm run typecheck` is clean, but `npm test` has not been run in this session, so the spec's Done-when (`tests/greet.test.ts` with 2 passing cases) is not yet met — it depends on subtask 2.
+Files: src/greet.ts
